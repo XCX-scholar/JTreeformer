@@ -10,11 +10,9 @@ import torch.nn as nn
 
 train_filename = os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','MolDataSet','train_data_moses.pkl')
 valid_filename = os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','MolDataSet','valid_data_moses.pkl')
-model_filename = os.path.join(os.path.abspath(''),'vae',"vae_model_moses3_epoch6.pth")
+model_filename = os.path.join(os.path.abspath(''),'vae',"vae_model_moses3_epoch4.pth")
 train_save_name=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','MolDataSet','train_encoding_moses3.pkl')
-valid_save_name=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','MolDataSet','1div3_valid_encoding_moses3.pkl')
-# folder="D:\\MolDataSet\\new_batch_data\\"
-# model_path=""
+valid_save_name=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','MolDataSet','valid_encoding_moses3.pkl')
 
 # with open(train_filename, "rb") as file:
 #     train_data = pickle.load(file)
