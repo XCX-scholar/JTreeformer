@@ -18,16 +18,18 @@ git clone https://github.com/your_username/ddpm-vae-training.git
 
 ### Training
 #### Train the vae model:
+First, the Jtreeformer's vae should be trained for latent space generation:
 ```bash
-python vae_train.py --parameters
+python vae_train.py --parameters --model_path path/to/save/model
 ```
 
 #### Train the DDIM model:
+The DDIM model is trained for sampling in latent space:
 ```bash
-python DDDM_train.py --parameters
+python DDDM_train.py --parameters --model_path path/to/save/model
 ```
 
 ### Testing
 ```bash
-python Generate3.py --parameters
+python Generate3.py --parameters --store_path path/to/save/result
 ```
