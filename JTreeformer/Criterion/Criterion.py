@@ -69,25 +69,3 @@ def IntDivp(valid_smiles_list,p=1):
                 cnt+=1
 
     return 1-np.power(T/cnt,1/p)
-
-
-# if __name__=="__main__":
-#     folder=""
-#     train_smiles_path="ZINC2.csv"
-#     gen_smiles_path="5eta0_250step_2000end_sample_moses3.txt"
-#     with open(folder+gen_smiles_path, 'r') as file:
-#         smiles=[x.strip() for x in file.readlines()]
-#     # smiles=pd.DataFrame(smiles,columns=['smiles'])
-#     # _s=smiles.groupby(['smiles'])
-#     # for k,v in _s:
-#     #     if v.shape[0]>1:
-#     #         print(k,v.shape[0])
-
-#     validity,valid_smiles_list=Validity(smiles)
-#     print(IntDivp(valid_smiles_list,1))
-#     print(validity)
-#     uniquity=Uniquity(valid_smiles_list)
-#     print(uniquity)
-#     # train_smiles_list=pd.read_csv(folder+train_smiles_path)["smiles"].apply(canonic_smiles)
-#     # novelty=Novelty(train_smiles_list,valid_smiles_list)
-#     # print(novelty)
