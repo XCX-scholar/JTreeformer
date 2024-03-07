@@ -34,7 +34,7 @@ class JTreeformer(nn.Module):
         self.dropout = dropout
         self.dropout_rate = dropout_rate
         self.latent_space_dim=latent_space_dim
-        # encoder和decoder不共用embedding
+
         self.encoder_node_feature = NodeFeature(
             num_node_type=num_node_type,
             max_hs=max_hs,
@@ -58,7 +58,7 @@ class JTreeformer(nn.Module):
             feature_test=feature_test
         )
 
-        # encoder和decoder不共用attention bias
+
         self.encoder_bias = AttentionBias(
             num_head=num_head_encoder,
             edge_type='adj',
@@ -241,5 +241,3 @@ class JTreeformer(nn.Module):
             # print("decoding finished")
 
             return result_node,relation_logit,mean_encoding,lnvar_encoding,z
-
-    # def predict(self,batch_data):
