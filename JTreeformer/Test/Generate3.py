@@ -6,7 +6,6 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from module.DDPM import GaussianDiffusion
-from module.Regressor import Regressor
 from module.JTreeformer import JTreeformer
 from Test.tensor2mol_mcts2 import *
 from jtnn_utils import *
@@ -15,11 +14,9 @@ import pickle
 import torch.nn as nn
 import time
 
+def Denoising(model: GaussianDiffusion,model2,args):
 
-# 从标准高斯噪声中用DDIM采用
-def Denoising(model: GaussianDiffusion,model2:Regressor,args):
-
-    sub_timestep=[int((args.end_step-args.start_step)/args.sample_steps)*i for i in range(args.sample_steps)] # 取子列时默认采用线性间隔默认采用线性间隔
+    sub_timestep=[int((args.end_step-args.start_step)/args.sample_steps)*i for i in range(args.sample_steps)] 
     sub_timestep.reverse()
     predict_sample = torch.randn((args.batch_size, args.latent_space_dim), device=torch.device(args.device))
     for i,time in tqdm(enumerate(sub_timestep), total=args.sample_steps):
@@ -34,12 +31,11 @@ def Denoising(model: GaussianDiffusion,model2:Regressor,args):
                 t_minus_one=torch.full((args.batch_size,),sub_timestep[i+1], dtype=torch.long,device=torch.device(args.device))
                 predict_sample = model.denoising_sample(predict_sample,t,t_minus_one,eta=args.eta,grad_scale=1 if grad is not None else 0,condition_gradient=grad)
                 print(predict_sample.max().item(), predict_sample.min().item())
-                with open(os.path.join(os.path.abspath(''),'encoding',f"moses_encoding_{sub_timestep[i+1]}step.pkl"), "wb") as file:
-                    pickle.dump(predict_sample, file)
+                # with open(os.path.join(os.path.abspath(''),'encoding',f"moses_encoding_{sub_timestep[i+1]}step.pkl"), "wb") as file:
+                #     pickle.dump(predict_sample, file)
 
     return predict_sample
 
-# 将潜在变量解码为SMILES格式分子
 def Decode(
         args
     ):
@@ -73,7 +69,7 @@ def Decode(
     model.encoder.add_module('property_proj', nn.Linear(model.encoder.hidden_dim, 4).to(
         torch.device(args.device)))
     model.load_state_dict(torch.load(args.model_path,map_location=torch.device(args.device)))
-    # 关闭训练时的dropout
+
     model.decoder.dropout=False
 
 
@@ -93,7 +89,6 @@ def Decode(
         if len(pred_nodes)>0:
             new_smiles=MolTree2Mol(pred_root,pred_nodes)
         else:
-            # 生成为空,则标记为无效分子
             new_smiles="None"
         print(len(pred_nodes), new_smiles)
 
@@ -103,7 +98,7 @@ def Decode(
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--ddim_path',default=os.path.join(os.path.abspath(''),'ddpm',"sl1_ddim_model_moses3_epoch20.pth"))
-    parser.add_argument('--reg_path', default=os.path.join(os.path.abspath(''),'vae',"reg_model_moses_ft_epoch4.pth"))
+    parser.add_argument('--reg_path', default=os.path.join(os.path.abspath(''),'vae',""))
     parser.add_argument('--batch_size',default= 5000)
     parser.add_argument('--latent_space_dim',default= 768)
     parser.add_argument('--sample_steps',default= 10)
@@ -125,51 +120,24 @@ if __name__=="__main__":
         num_sample_steps=1000,
         device=args.device
     )
-    # model2 = Regressor(
-    #     in_dim=768,
-    #     out_dim=768,
-    #     hidden_dim=768,
-    #     time_embedding_dim=768,
-    #     num_block=3,
-    #     dropout=True,
-    #     dropout_rate=0.2,
-    #     Init_params=True,
-    #     device="cpu"
-    # )
+
     model.load_state_dict(torch.load(args.ddim_path,map_location=torch.device(args.device)))
-    # model2.load_state_dict(torch.load(args.reg_path))
     print("load done")
     encoding = Denoising(model=model,model2=None,args=args)
-    # pickle.dump(encoding, open(os.path.join(os.path.abspath(''),'encoding',"1000_50_10_encoding_moses_ft.pkl"), "wb"))
+    # pickle.dump(encoding, open(os.path.join(os.path.abspath(''),'encoding',"1000_10_encoding_moses.pkl"), "wb"))
 
 # if __name__=='__main__':
 #     parser = argparse.ArgumentParser()
-#     parser.add_argument('--laten_encoding_path',default=os.path.join(os.path.abspath(''),'encoding', '1000_50_10_encoding_moses_ft.pkl'))
+#     parser.add_argument('--laten_encoding_path',default=os.path.join(os.path.abspath(''),'encoding', '1000_10_encoding_moses_ft.pkl'))
 #     parser.add_argument('--prob_decode_node',default=False)
-#     parser.add_argument('--store_path', default=os.path.join(os.path.abspath(''),'result',"ddim_1000_50_10_moses_ft.txt"))
+#     parser.add_argument('--store_path', default=os.path.join(os.path.abspath(''),'result',"ddim_1000_10_moses.txt"))
 #     parser.add_argument('--vocab_path',default=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','vocab',"vocab_moses.txt"))
-#     parser.add_argument('--model_path',default=os.path.join(os.path.abspath(''),'vae',"vae_model_moses_ft_epoch4.pth"))
-#     parser.add_argument('--max_decode_step',default=30)
-#     parser.add_argument('--prob_decode_edge',default=False)
-#     parser.add_argument('--device',default='cpu')
-#     parser.add_argument('--feature_test',default=True)
-#     parser.add_argument('--g_test',default=False)
-#     args=parser.parse_args()
-
-#     Decode(args)
-
-# if __name__=='__main__':
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument('--laten_encoding_path',default=os.path.join(os.path.abspath(''),'encoding', '1000_50_10_encoding_moses_ft.pkl'))
-#     parser.add_argument('--prob_decode_node',default=False)
-#     parser.add_argument('--store_path', default=os.path.join(os.path.abspath(''),'result',"ddim_1000_50_10_moses_ft.txt"))
-#     parser.add_argument('--vocab_path',default=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','vocab',"vocab_moses.txt"))
-#     parser.add_argument('--model_path',default=os.path.join(os.path.abspath(''),'vae',"vae_model_moses_ft_epoch4.pth"))
+#     parser.add_argument('--model_path',default=os.path.join(os.path.abspath(''),'vae',"vae_model_moses_epoch4.pth"))
 #     parser.add_argument('--max_decode_step',default=30)
 #     parser.add_argument('--prob_decode_edge',default=False)
 #     parser.add_argument('--device',default='cpu')
 #     parser.add_argument('--feature_test',default=False)
-#     parser.add_argument('--g_test',default=True)
+#     parser.add_argument('--g_test',default=False)
 #     args=parser.parse_args()
 
 #     Decode(args)
