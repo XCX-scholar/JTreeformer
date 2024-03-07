@@ -15,8 +15,13 @@ def bfs_ranking(node_list):
     fa_nids=[q[0].nid]
     while(len(q)>0):
         if len(q[0].neighbors) >0:
+            deg=[]
             fa_nids.append(q[0].nid)
             for nei in q[0].neighbors:
+                deg.append(len(nei.neighbors))
+            idx=np.argsort(np.array(deg))[::-1]
+            for i in idx:
+                nei=q[0].neighbors[i]
                 if nei.nid not in fa_nids:
                     nei.layer=q[0].layer+1
                     q.append(nei)
