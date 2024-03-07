@@ -1,6 +1,6 @@
 # JTreeformer
 
-This repository contains code and resources for training Denoising Diffusion Probabilistic Models (DDPM) and Variational Autoencoder (VAE) models. These models are used for generative modeling and probabilistic inference tasks, applicable in image generation, data compression, and other probabilistic inference tasks.
+This repository contains code and resources for training Denoising Diffusion Probabilistic Models (DDPM) and Variational Autoencoder (VAE) models, where VAE is the proposed method we utilize for molecule representation in latent space and molecule generation. DDPM is utilized to sample in the latent space.
 
 ## Contents
 
