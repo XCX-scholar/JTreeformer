@@ -40,8 +40,8 @@ class DecoderLayer(nn.Module):
                                             device=device)
         self.g_test=g_test
         if not self.g_test:
-            self.dagcn_proj=nn.Linear(hidden_dim,hidden_dim).to(self.device) #DAGCN模块(我们论文中提出)的线性层
-            self.fusion = nn.Linear(2*hidden_dim,hidden_dim).to(self.device) #两个模块拼接后映射回原本的维度，再残差链接
+            self.dagcn_proj=nn.Linear(hidden_dim,hidden_dim).to(self.device) 
+            self.fusion = nn.Linear(2*hidden_dim,hidden_dim).to(self.device) 
         self.ff1 = nn.Linear(hidden_dim, expand_dim).to(self.device)
         self.ff2 = nn.Linear(expand_dim, hidden_dim).to(self.device)
 
@@ -126,7 +126,7 @@ class Decoder(nn.Module):
                                                   g_test=g_test)
                                      for _ in range(num_layers)])
 
-        self.node_logit_proj = nn.Linear(hidden_dim,num_node_type+2).to(self.device) # 映射为节点类型的logit
+        self.node_logit_proj = nn.Linear(hidden_dim,num_node_type+2).to(self.device) 
         self.dropout = dropout
         if self.dropout:
             self.Dropout = [nn.Dropout(p=i.item()) for i in torch.arange(start=0,end=(1+1/self.num_layers)*dropout_rate,step=1/self.num_layers*dropout_rate)]
