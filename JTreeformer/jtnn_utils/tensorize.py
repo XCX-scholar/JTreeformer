@@ -7,14 +7,6 @@ import json
 import torch
 import numpy as np
 
-# with open(os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"vocab",'vocab_guaca.txt')),"r") as file:
-#     dict={x.strip():i+1 for i,x in enumerate(file.readlines())}
-#     dict['padding']=0
-#     dict['stop']=len(dict)
-#     dict['mask']=len(dict)
-#     js=json.dumps(dict)
-#     with open(os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"vocab",'vocab_map_guaca.json')),"a") as file:
-#         file.write(js)
 
 def bfs_ranking(node_list):
     res=[node_list[0]]
@@ -40,12 +32,6 @@ def convert(MolTrees,length,vocab_map):
     p=[]
     l=[]
     h=[]
-    # vn=[]
-    # va=[]
-    # vp=[]
-    # vl=[]
-    # vh=[]
-    # idx=np.random.choice(range(1497218),valid_num,replace=False)
     for i,tree in enumerate(MolTrees):
         node_ = torch.zeros(length+1, dtype=torch.int16)
         hs_=torch.zeros(length+1,dtype=torch.int8)
@@ -72,13 +58,6 @@ def convert(MolTrees,length,vocab_map):
             if tmp.numel()>0:
                 print(i)
             else:
-                # if i in idx:
-                # vn.append(node_)
-                # va.append(adj_)
-                # vp.append(property_)
-                # vl.append(layer_)
-                # vh.append(hs_)
-                # else:
                 n.append(node_)
                 a.append(adj_)
                 p.append(property_)
@@ -90,7 +69,6 @@ def convert(MolTrees,length,vocab_map):
 
 
     return torch.stack(n,dim=0),torch.stack(h,dim=0),torch.stack(a,dim=0),torch.stack(p,dim=0),torch.stack(l,dim=0)
-# ,torch.stack(vn,dim=0),torch.stack(vh,dim=0),torch.stack(va,dim=0),torch.stack(vp,dim=0),torch.stack(vl,dim=0)
 
 if __name__=='__main__':
     import pickle
@@ -113,7 +91,6 @@ if __name__=='__main__':
             min=num_node
     print(min, max, n, num_nodes / n)
     node_,hs_,adj_,pro_,layer_=convert(MolTrees=MolTrees,length=90,valid_num=0,vocab_map=vocab_map)
-    # , vnode_, vhs_, vadj_, vpro_, vlayer_
     adj_=adj_.bool()
     data={}
     data['x']=node_
@@ -125,19 +102,7 @@ if __name__=='__main__':
     print(hs_.max(),pro_[:,0].max(),pro_[:,1].max(),pro_[:,2].max())
     with open(os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"MolDataSet","valid_data_guaca.pkl")),'wb') as file:
         pickle.dump(data,file)
-    # data['x']=vnode_
-    # data['hs']=vhs_
-    # data["property"]=vpro_
-    # data['adj']=vadj_
-    # data['layer_number']=vlayer_
-    # print(node_.shape)
-    # print(vhs_.max(),vpro_[:,0].max(),vpro_[:,1].max(),vpro_[:,2].max())
-    # with open(r"D:\MolDataSet\new_batch_data\valid_data_zinc3.pkl",'wb') as file:
-    #     pickle.dump(data,file)
 
 # # 0 40 164664 17.752933245882524
 # # 38 449.6430 3.3969 225.9800
 # # 13 449.5510 1.9607 188.
-
-# 0 88 1194730 16.839583002017193
-# tensor(90, dtype=torch.int8) tensor(17.5085) tensor(23.8624) tensor(4.6672)
