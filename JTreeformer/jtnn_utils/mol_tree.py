@@ -126,38 +126,6 @@ def dfs(node, fa_idx):
         max_depth = max(max_depth, dfs(child, node.idx))
     return max_depth + 1
 
-
-# def main_mol_tree(oinput, ovocab, MAX_TREE_WIDTH=50):
-#     cset = set()
-#     with open(oinput, 'r') as input_file:
-#         for i, line in enumerate(input_file.readlines()):
-#             smiles = line.strip().split()[0]
-#             alert = False
-#             mol = MolTree(smiles)
-#             for c in mol.nodes:
-#                 if c.mol.GetNumAtoms() > MAX_TREE_WIDTH:
-#                     alert = True
-#                 cset.add(c.smiles)
-#             if len(mol.nodes) > 1 and alert:
-#                 sys.stderr.write('[WARNING]: %d-th molecule %s has a high tree-width.\n' % (i + 1, smiles))
-#
-#     with open(ovocab, 'w') as vocab_file:
-#         for x in cset:
-#             vocab_file.write(x + '\n')
-#
-#
-# if __name__ == "__main__":
-#     lg = rdkit.RDLogger.logger()
-#     lg.setLevel(rdkit.RDLogger.CRITICAL)
-#     sys.stderr.write('Running tree decomposition on the dataset')
-#
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("-i", "--input", dest="input")
-#     parser.add_argument("-v", "--vocab", dest="vocab")
-#     opts = parser.parse_args()
-#
-#     main_mol_tree(opts.input, opts.vocab)
-
 def convert(ismiles, MAX_TREE_WIDTH=50):
     cset = set()
     i,smiles=ismiles
@@ -188,10 +156,6 @@ def main_mol_tree(pool,oinput, ovocab):
         os.makedirs(save_path)
     all_data = pool.map(convert,enumerate(oinput))
     Trees,csets=zip(*all_data)
-    # print(type(Tree),type(csets))
-    # print(len(Tree),len(csets))
-    # print(Tree[0].smiles)
-# guacamol_v1_train.smiles
 
     Trees=[t for t in Trees if t is not None]
     csets= [c for c in csets if c is not None]
@@ -206,55 +170,3 @@ def main_mol_tree(pool,oinput, ovocab):
             file.write(v+'\n')
 
 # 1497218
-# if __name__ == "__main__":
-    # import pandas as pd
-    # df=pd.read_csv(r"D:\MolDataSet\test.txt")['SMILES']
-    # file_path=os.path.abspath(os.path.join(os.path.dirname(__file__),'../..',"guaca_data","guacamol_v1_valid.smiles"))
-    # with open(file_path, 'r') as file:
-    #     smiles=[x.strip() for x in file.readlines()]
-    # lg = rdkit.RDLogger.logger()
-    # lg.setLevel(rdkit.RDLogger.CRITICAL)
-    # sys.stderr.write('Running tree decomposition on the dataset')
-    # from multiprocessing import Pool
-    # import os
-    # pool = Pool(os.cpu_count())
-    # voc_path=os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"vocab"))
-    # if os.path.isdir(voc_path) is False:
-    #     os.makedirs(voc_path)
-    # main_mol_tree(pool,smiles,os.path.join(voc_path,'guaca_vocab.txt'))
-    # save_path = os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"MolDataSet","valid_guaca_mol_tree.pkl"))
-    # with open(save_path, 'rb') as file:
-    #     data=pickle.load(file)
-    # n=len(data)
-    # num_nodes=0
-    # max=0
-    # min=0
-    # for tree in data:
-    #     num_node=len(tree.nodes)
-    #     num_nodes+=num_node
-    #     if num_node>max:
-    #         max=num_node
-    #     if num_node<min:
-    #         min=num_node
-    # print(min,max,n,num_nodes/n)
-# 0 28 1497218 13.474900114746148
-# 0 26 166188 13.469017016872458
-    
-# 0 88 1194730 16.839583002017193
-# 0 73 74788 16.81442209980211
-
-# with open(r"D:\MolDataSet\moses_mol_tree.pkl", 'rb') as file:
-#     Trees=pickle.load(file)
-# print(len(Trees))
-# for t in Trees[:50]:
-#     if t is not None:
-#         print(t.smiles)
-
-# voc_path=os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"vocab",'guaca_vocab.txt'))
-# with open(voc_path,"r") as file:
-#     cset=[x.strip() for x in file.readlines()]
-
-# vocab=set(cset)
-# with open(os.path.abspath(os.path.join(os.path.dirname(__file__),'..',"vocab",'vocab_guaca.txt')),"a") as file:
-#     for v in vocab:
-#         file.write(v+'\n')
