@@ -138,9 +138,3 @@ def test_2(smiles1,smiles2,vocab_path,model_path,max_decode_step=30,prob_decode_
         else:
             new_smiles="None"
         print(len(pred_nodes), new_smiles)
-
-if '__main__'==__name__:
-    model_path = os.path.join(os.path.abspath(''),'vae',"vae_model_moses3_epoch4.pth")
-    smiles_list = ['CCCCCCCCCCCCCCC','CCCCCCCOCCCCCCCC']
-    test_1(smiles_list,os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','vocab','vocab_moses.txt'),model_path)
-    # test_2(smiles_list[0],smiles_list[1],os.path.join(os.path.abspath(''),'GraphLatentDiffusion3','vocab','vocab_moses.txt'),model_path)
