@@ -36,10 +36,6 @@ class MultiEpochsDataLoader(torch.utils.data.DataLoader):
 
 
 class _RepeatSampler(object):
-    """ Sampler that repeats forever.
-    Args:
-        sampler (Sampler)
-    """
 
     def __init__(self, sampler):
         self.sampler = sampler
@@ -77,7 +73,7 @@ class kl_coef():
         if self.cnt<self.warm_up_step:
             return 0
         elif self.cnt<self.raise_step:
-            return 1/5/int((self.raise_step-self.warm_up_step)/self.station_step)*int((self.cnt-self.warm_up_step)/self.station_step)
+            return 1/int((self.raise_step-self.warm_up_step)/self.station_step)*int((self.cnt-self.warm_up_step)/self.station_step)
             # return 1 /(self.raise_step - self.warm_up_step)*(self.cnt - self.warm_up_step)
         else:
             return 1
@@ -116,9 +112,6 @@ class VAE_Train():
             
         KL_coef=kl_coef(size=size,batch_size=self.mini_batch_size,epoch=self.epoch)
         loader=MultiEpochsDataLoader(train_data,self.mini_batch_size,shuffle=True,num_workers=4,drop_last=True)
-        # for i in range(size//self.mini_batch_size*6):
-        #     warmup.step()
-        #     KL_coef.step()
         mini_batch_data=dict()
 
         for j in range(self.epoch):
@@ -174,7 +167,7 @@ class VAE_Train():
 
                 epoch_loss = np.append(epoch_loss,(Loss.item(),mean_CE_node.item(),mean_CE_edge.item(),KL.item(),w_loss.item(),logp_loss.item(),tpsa_loss.item()))
             if (j+1)%1==0:
-                torch.save(model.state_dict(),os.path.join(model_path,f"vae_model_moses3_kl1div5_epoch{(j+1)}.pth"))
+                torch.save(model.state_dict(),os.path.join(model_path,f"vae_model_moses3_epoch{(j+1)}.pth"))
 
             with torch.no_grad():
                 loader2=MultiEpochsDataLoader(valid_data,self.mini_batch_size*4,shuffle=True,num_workers=4,drop_last=True)
@@ -256,13 +249,12 @@ def pretrain_model(args):
                                      args.device))
         nn.init.xavier_normal_(model.encoder.property_proj.weight, gain=0.87 * (((12+ 2) ** 4) *12) ** (-1 / 16))
         nn.init.constant_(model.encoder.property_proj.bias, 0)
-    # model.load_state_dict(torch.load(os.path.join(os.path.abspath(''),"vae","vae_model_moses3_epoch4.pth")))
     train=VAE_Train(mini_batch_size=args.batch_size,epoch=args.epoch,device = args.device)
     epoch_loss,valid_loss = train.train(
         train_data=train_data,valid_data=valid_data,
         model=model, lr=0.0001,separate_train=False,cls_auxiliary=args.cls_auxiliary)
-    pickle.dump(epoch_loss,open(os.path.join(loss_path,"vae_train_loss_moses3_kl1div5.pkl"),"wb"))
-    pickle.dump(valid_loss, open(os.path.join(loss_path,"vae_valid_loss_moses3_kl1div5.pkl"), "wb"))
+    pickle.dump(epoch_loss,open(os.path.join(loss_path,"vae_train_loss_moses3.pkl"),"wb"))
+    pickle.dump(valid_loss, open(os.path.join(loss_path,"vae_valid_loss_moses3.pkl"), "wb"))
     print("loss save done.")
 
 if __name__=='__main__':
