@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-# 三角函数位置编码.给父节点使用
 def position_encoding(position,hidden_dim):
     assert hidden_dim==(hidden_dim//2)*2
     pe=torch.zeros(*(position.shape),hidden_dim,device=position.device)
@@ -12,7 +11,6 @@ def position_encoding(position,hidden_dim):
     pe[:,:,1::2]=torch.cos(position.unsqueeze(-1)*factor)
     return pe
 
-# 节点编码
 class NodeFeature(nn.Module):
     def __init__(
             self,
@@ -38,7 +36,7 @@ class NodeFeature(nn.Module):
             self.layer_num_encoding = nn.Embedding(max_layer_num+1, hidden_dim, padding_idx=0).to(self.device)
             self.bro_ord_encoding=nn.Embedding(max_brother_num+1, hidden_dim, padding_idx=0).to(self.device)
         self.decoder = decoder
-        self.virtual_token_encoding = nn.Embedding(1, hidden_dim).to(self.device) # 在encoder中是CLS,在decoder中是起始字符.
+        self.virtual_token_encoding = nn.Embedding(1, hidden_dim).to(self.device) 
         if not decoder:
             self.degree_encoding = nn.Embedding(max_degree + 1, hidden_dim, padding_idx=0).to(self.device)
 
@@ -57,7 +55,6 @@ class NodeFeature(nn.Module):
             bro_ord_feature=self.bro_ord_encoding(brother_order)
             node_feature+=bro_ord_feature
 
-        # 先前的模型层尝试使用rotation position encoding,T是旋转矩阵,现在已弃用
         if T is not None:
             node_feature=torch.bmm(T,node_feature)
         if not self.decoder:
@@ -67,7 +64,6 @@ class NodeFeature(nn.Module):
         node_feature = torch.cat([virtual_token_feature,node_feature],dim=1)
         return node_feature
 
-# 多头子注意力
 class MultiHeadAttention(nn.Module):
     def __init__(
             self,
@@ -102,7 +98,6 @@ class MultiHeadAttention(nn.Module):
         # self.reset_parameters()
 
     def reset_parameters(self):
-        # 初始化
         if self.k_dim == self.v_dim and self.k_dim == self.q_dim:
             nn.init.xavier_uniform_(self.k_proj.weight, gain= 2 ** -0.5)
             nn.init.xavier_uniform_(self.v_proj.weight, gain= 2 ** -0.5)
@@ -142,7 +137,6 @@ class MultiHeadAttention(nn.Module):
         # dim:[num_graph*num_head,tgt_node,src_node]
 
         attn_weights = attn_weights.reshape(num_graph, self.num_head, tgt_node, src_node)
-        # 加bias
         if attn_bias is not None:
             attn_weights += attn_bias
         #
