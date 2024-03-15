@@ -18,7 +18,7 @@ def VAE_Loss3(
         cls_auxiliary=True,
         device=torch.device("cuda:0")
     ):
-    x,adj_edge_feature,layers = batch_data['x'],batch_data['adj']
+    x,adj_edge_feature,layers = batch_data['x'],batch_data['adj'],batch_data['layer_number']
     num_graph,num_node = x.shape[0],x.shape[1]
 
     '''Calculate CE loss for predicted nodes'''
