@@ -574,8 +574,8 @@ def Tensor2MolTree(model:JTreeformer,
                    ):
         assert latent_encoding.shape[0] == 1
 
-
         list = []
+        layer_first=[]
         num_node=0
         node_list=torch.zeros((1,num_node), dtype=torch.long, device=torch.device(device))
         hs=torch.zeros((1, num_node), dtype=torch.long, device=torch.device(device))
@@ -583,7 +583,6 @@ def Tensor2MolTree(model:JTreeformer,
         layer_number=torch.zeros((1,num_node), dtype=torch.long, device=torch.device(device))
         sing=[i+1 for i in range(len(vocab.vocab)-1) if len(vocab.vocab[i+1])==1]
         # ring=[i+1 for i in range(len(vocab.vocab)-1) if len(vocab.vocab[i+1])>3]
-
         if use_black_list:
             black_list=[i+1 for i in range(len(vocab.vocab)-1) if (len(vocab.vocab[i+1])==2 and vocab.vocab[i+1].__contains__('C') and vocab.vocab[i+1]!='CC')]+[vocab.vmap['C']]
 
@@ -597,7 +596,6 @@ def Tensor2MolTree(model:JTreeformer,
         # root_wid = ring[sort_wid.item()]
         root_wid=sort_wid.item()
 
-        # root_wid=428
         root = MolTreeNode(vocab.get_smiles(root_wid))
         root.fa=None
         root.wid = root_wid
@@ -610,12 +608,11 @@ def Tensor2MolTree(model:JTreeformer,
         layer_number=torch.cat([layer_number,torch.ones(1,1,dtype=torch.long, device=adj.device)],dim=-1)
         all_nodes = [root]
         num_node+=1
+        layer_first.append(0)
 
         stop=False
         with torch.no_grad():
-
             while(not stop):
-
                 next_node_logit,node_decoding = PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number)
                 next_node_logit=next_node_logit[:,:vocab.vmap['stop']+1]
                 # print(next_node_logit.shape,vocab.vmap['stop'])
@@ -631,7 +628,6 @@ def Tensor2MolTree(model:JTreeformer,
 
                 next_wid = None
                 for i in range(15):
-
                     wid=sort_wid[:,i].item()
                     if wid==vocab.vmap['stop'] or wid==0:
                         break
@@ -645,7 +641,7 @@ def Tensor2MolTree(model:JTreeformer,
                     relation_logit = PredictRelation(model, node_decoding,cand_node_list)
                     if prob_decode_edge:
                         prob_relation = torch.softmax(relation_logit, dim=-1)
-                        sort_relation = torch.multinomial(prob_relation,3,replacement=True)
+                        sort_relation = torch.multinomial(prob_relation,4,replacement=True)
                     else:
                         _,sort_relation = torch.sort(relation_logit, dim=-1, descending=True)
                     # print(wid)
@@ -653,7 +649,7 @@ def Tensor2MolTree(model:JTreeformer,
                     node_y=MolTreeNode(vocab.get_smiles(wid))
                     fa_id=None
                     can_assm=False
-                    for j in range(3):
+                    for j in range(4):
                         if num_node==1:
                             fa_id=0
                         else:
@@ -662,10 +658,11 @@ def Tensor2MolTree(model:JTreeformer,
                                 fa_id=num_node-1
                             elif relation==1:
                                 fa_id=all_nodes[num_node-1].fa.idx
-                            else:
+                            elif relation==2:
                                 fa_id = all_nodes[num_node - 1].fa.idx+1
+                            else:
+                                fa_id=layer_first[-1]
                         node_x,fa_slot=list[fa_id]
-
                         if checking_charge:
                             if not have_charge(node_x,node_y) or len(node_x.neighbors)+1>=8:
                                 continue
@@ -675,7 +672,6 @@ def Tensor2MolTree(model:JTreeformer,
                         if node_x.wid in sing:
                             continue
                         cur_s=vocab.get_smiles(wid)
-
                         if bond_limit:
                             if len(node_x.smiles)==2:
                                 ctn=False
@@ -697,8 +693,8 @@ def Tensor2MolTree(model:JTreeformer,
                         break
                 if next_wid is None:
                     break
-
-
+                if relation==3:
+                    layer_first.append(num_node)
                 node_y = MolTreeNode(vocab.get_smiles(next_wid))
                 node_y.wid = next_wid
                 node_y.idx = len(all_nodes)
@@ -718,16 +714,14 @@ def Tensor2MolTree(model:JTreeformer,
                 layer_number=torch.cat([layer_number,(layer_number[:,fa_id]+1).unsqueeze(-1)],dim=1)
 
                 num_node+=1
-
                 if num_node>=max_decode_step:
                     stop=True
             # print(adj)
-            print(node_list)
+            # print(node_list)
             # print(num_node)
 
             for i,node in enumerate(all_nodes):
                 node.nid=i+1
-
 
         return root, all_nodes
 
