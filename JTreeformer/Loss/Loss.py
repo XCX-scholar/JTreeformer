@@ -46,8 +46,11 @@ def VAE_Loss3(
     relation[fa] = 1
     relation[bro] = 2
     relation[~(fa | bro)] = 3
+    la=layers[:,:-1]!=layers[:,1:]
+    la=torch.cat([la,torch.zeros((layers.shape[0],1),dtype=torch.bool,device=relation.device)],dim=-1)
+    relation[la]=4
     relation[flag.eq(1)] = 0
-    relation[:, 0] = 1
+    relation[:, 0] = 4
     '''Calculate CE loss for predicted relationship'''
     relation=relation.reshape(-1)
     result_edge = result_edge[:,:num_node,:].reshape(num_graph*num_node,relation_type).to(device)
