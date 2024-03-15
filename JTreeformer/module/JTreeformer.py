@@ -110,7 +110,7 @@ class JTreeformer(nn.Module):
             device=device
         )
 
-        self.relation_logit_proj=nn.Linear(hidden_dim_decoder,4).to(self.device)
+        self.relation_logit_proj=nn.Linear(hidden_dim_decoder,5).to(self.device)
 
         self.mean_proj = nn.Linear(hidden_dim_encoder,latent_space_dim).to(self.device)
         self.lnvar_proj = nn.Linear(hidden_dim_encoder,latent_space_dim).to(self.device)
