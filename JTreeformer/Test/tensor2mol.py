@@ -241,6 +241,7 @@ def Tensor2MolTree(model:JTreeformer,
 
 
         list = []
+        layer_first=[]
         num_node=0
         sing=[i+1 for i in range(len(vocab.vocab)-1) if len(vocab.vocab[i+1])==1]
         if use_black_list:
@@ -282,6 +283,7 @@ def Tensor2MolTree(model:JTreeformer,
 
         all_nodes = [root]
         num_node+=1
+        layer_first.append(0)
 
         stop=False
         with torch.no_grad():
@@ -324,7 +326,7 @@ def Tensor2MolTree(model:JTreeformer,
                     node_y = MolTreeNode(vocab.get_smiles(wid))
                     fa_id=None
                     can_assm=False
-                    for j in range(3):
+                    for j in range(4):
                         if num_node==1:
                             fa_id=0
                         else:
@@ -333,8 +335,10 @@ def Tensor2MolTree(model:JTreeformer,
                                 fa_id=num_node-1
                             elif relation==1:
                                 fa_id=all_nodes[num_node-1].fa.idx
-                            else:
+                            elif relation==2:
                                 fa_id = all_nodes[num_node - 1].fa.idx+1
+                            else:
+                                fa_id=layer_first[-1]
                         node_x,fa_slot=list[fa_id]
                         if checking_charge:
                             if not have_charge(node_x,node_y) or len(node_x.neighbors)+1>=7:
@@ -369,8 +373,8 @@ def Tensor2MolTree(model:JTreeformer,
                         break
                 if next_wid is None:
                     break
-
-
+                if relation==3:
+                    layer_first.append(num_node)
                 node_y = MolTreeNode(vocab.get_smiles(next_wid))
                 node_y.wid = next_wid
                 node_y.idx = len(all_nodes)
