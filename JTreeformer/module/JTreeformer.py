@@ -6,6 +6,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class JTreeformer(nn.Module):
+    """
+    Initializes the JTreeformer model.
+
+    Args:
+        num_layers_encoder (int): Number of encoder layers.
+        num_layers_decoder (int): Number of decoder layers.
+        hidden_dim_encoder (int): Hidden dimension size for the encoder.
+        expand_dim_encoder (int): Expand dimension size for the encoder.
+        hidden_dim_decoder (int): Hidden dimension size for the decoder.
+        expand_dim_decoder (int): Expand dimension size for the decoder.
+        latent_space_dim (int): Dimension size of the latent space.
+        num_head_encoder (int): Number of attention heads for the encoder.
+        num_head_decoder (int): Number of attention heads for the decoder.
+        num_node_type (int): Number of node types.
+        max_hs (int): Maximum number of hydrogen atoms.
+        max_degree (int): Maximum degree of nodes.
+        max_layer_num (int): Maximum number of layers.
+        max_brother_num (int): Maximum number of brother nodes.
+        dropout (bool): Whether to use dropout.
+        dropout_rate (float): Dropout rate.
+        device (str,): Device to use for training.
+        feature_test (bool): Whether to test the node features.
+        g_test (bool): Whether to test the graph features.
+    """
     def __init__(
             self,
             num_layers_encoder = 12,
@@ -24,7 +48,7 @@ class JTreeformer(nn.Module):
             max_brother_num=20,
             dropout=True,
             dropout_rate=0.1,
-            device="cuda",
+            device="cuda:0",
             feature_test=False,
             g_test=False
     ):
