@@ -4,8 +4,6 @@ sys.path.append(os.path.dirname(sys.path[0]))
 import torch
 import torch.nn as nn
 import pickle
-import math
-import numpy as np
 import os
 import math
 import argparse
@@ -14,8 +12,7 @@ from module.JTreeformer import JTreeformer
 from Loss.Loss import VAE_Loss3
 from module.jtreeformer_modules import lambda_lr
 from torch.utils.data import DataLoader,Dataset
-
-# os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+from tqdm import tqdm
 
 
 class MultiEpochsDataLoader(torch.utils.data.DataLoader):
@@ -44,7 +41,6 @@ class _RepeatSampler(object):
         while True:
             yield from iter(self.sampler)
 
-# dataset
 class JTDataSet(Dataset):
     def __init__(self,batch_data):
         self.adj = batch_data['adj'].long()
@@ -74,188 +70,170 @@ class kl_coef():
             return 0
         elif self.cnt<self.raise_step:
             return 1/int((self.raise_step-self.warm_up_step)/self.station_step)*int((self.cnt-self.warm_up_step)/self.station_step)
-            # return 1 /(self.raise_step - self.warm_up_step)*(self.cnt - self.warm_up_step)
         else:
             return 1
 
-class VAE_Train():
-    def __init__(self,device="cuda:0",epoch=5,mini_batch_size=256):
-        self.device = torch.device(device)
-        self.epoch = epoch
-        self.mini_batch_size = mini_batch_size
-        self.loss1 = nn.CrossEntropyLoss(reduction="mean",ignore_index=0)
-        self.loss2 = nn.CrossEntropyLoss(reduction="mean",ignore_index=0)
+def save_model(model, optimizer, epoch, save_path):
+    """Saves the model and optimizer state."""
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'epoch': epoch,
+    }, save_path)
+    print(f"Model saved to {save_path}")
 
-    def train(
-            self,
-            train_data:JTDataSet,
-            valid_data:JTDataSet,
-            model:JTreeformer,
-            separate_train=True,
-            alpha=1,
-            gamma=0.2,
-            cls_auxiliary=True,
-            lr=0.001,
-    ):
-        model_path=os.path.join(os.path.abspath(''),"vae")
-        if os.path.isdir(model_path) is False:
-            os.makedirs(model_path)
 
-        epoch_loss = np.array([])
-        valid_loss=np.array([])
-        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),lr=lr)
-        size=train_data.__len__()
+def load_model(model, optimizer, load_path):
+    """Loads the model and optimizer state."""
+    checkpoint = torch.load(load_path, map_location=lambda storage, loc: storage)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    print(f"Model loaded from {load_path}, trained for {epoch} epochs.")
+    return epoch
 
-        lamb = lambda_lr(warmup_step=math.ceil(size//self.mini_batch_size*self.epoch*1/8),beta=math.log(500)/math.ceil(size//self.mini_batch_size*self.epoch*7/8))
 
-        warmup = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer,lr_lambda=lamb.lambda_lr)
-            
-        KL_coef=kl_coef(size=size,batch_size=self.mini_batch_size,epoch=self.epoch)
-        loader=MultiEpochsDataLoader(train_data,self.mini_batch_size,shuffle=True,num_workers=4,drop_last=True)
-        mini_batch_data=dict()
+def pretrain_model(args):
+    """Pretrains the JTreeformer VAE model."""
+    device = torch.device(args.device)
+    train_dataset = JTDataSet(pickle.load(open(args.train_path, "rb")))
+    valid_dataset = JTDataSet(pickle.load(open(args.valid_path, "rb")))
+    train_loader = MultiEpochsDataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1, pin_memory=True)
+    valid_loader = MultiEpochsDataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1, pin_memory=True)
+    loss1 = nn.CrossEntropyLoss(reduction="mean", ignore_index=0)
+    loss2 = nn.CrossEntropyLoss(reduction="mean", ignore_index=0)
+    model = JTreeformer(
+        num_layers_encoder=args.num_layers_encoder,
+        num_layers_decoder=args.num_layers_decoder,
+        hidden_dim_encoder=args.hidden_dim_encoder,
+        expand_dim_encoder=args.expand_dim_encoder,
+        hidden_dim_decoder=args.hidden_dim_decoder,
+        expand_dim_decoder=args.expand_dim_decoder,
+        latent_space_dim=args.latent_space_dim,
+        num_head_encoder=args.num_head_encoder,
+        num_head_decoder=args.num_head_decoder,
+        num_node_type=args.num_node_type,
+        max_hs=args.max_hs,
+        max_degree=args.max_degree,
+        max_layer_num=args.max_layer_num,
+        max_brother_num=args.max_brother_num,
+        dropout=args.dropout,
+        dropout_rate=args.dropout_rate,
+        device=args.device,
+        feature_test=args.feature_test,
+        g_test=args.g_test
+    ).to(device)
+    model.train()
 
-        for j in range(self.epoch):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    loss_fn = VAE_Loss3
 
-            print("----------------epoch: "+str(j+1)+"----------------\n")
-            for i,tensors in enumerate(loader):
-                x,hs,layer_number,property,adj=tensors
-                mini_batch_data['x']=x.to(self.device)
-                mini_batch_data['hs']=hs.to(self.device)
-                mini_batch_data['layer_number'] =layer_number.to(self.device)
-                mini_batch_data['property'] = property.to(self.device)
-                mini_batch_data['adj'] = adj.to(self.device)
+    start_epoch = 0
+    save_dir = os.path.join(os.path.abspath(''), 'checkpoints')
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, "jtreeformer_vae.pth")
 
-                result_node,result_edge,mean_encoding,lnvar_encoding,z = model.forward(batch_data=mini_batch_data)
-                pred_property=None
-                if cls_auxiliary:
-                    pred_property=model.encoder.property_proj(z)
-                # gc.collect()
-                # torch.cuda.empty_cache()
-                Loss,mean_CE_node,mean_CE_edge,KL,w_loss,logp_loss,tpsa_loss = VAE_Loss3(
-                    mini_batch_data,
-                    result_node,
-                    result_edge,
-                    mean_encoding,
-                    lnvar_encoding,
-                    alpha,
-                    pred_property=pred_property,
-                    loss1=self.loss1,
-                    loss2=self.loss2,
-                    beta=0,
-                    gamma=gamma,
-                    cls_auxiliary=cls_auxiliary,
-                    device=self.device)
+    if os.path.exists(save_path):
+        start_epoch = load_model(model, optimizer, save_path) + 1
+
+    size = train_dataset.__len__()
+    lamb = lambda_lr(warmup_step=math.ceil(size // args.batch_size * args.epoch * 1 / 8),
+                     beta=math.log(500) / math.ceil(size // args.batch_size * args.epoch * 7 / 8))
+
+    warmup = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lamb.lambda_lr)
+    KL_coef = kl_coef(size=size, batch_size=args.batch_size, epoch=args.epoch)
+    train_losses = []
+    valid_losses = []
+    for epoch in range(start_epoch, args.epoch):
+        with tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epoch}") as pbar:
+            model.train()
+            total_loss = 0
+            num_batches = 0
+            for batch_data in pbar:
+                batch_data_ = dict()
+                for k,v in batch_data.items():
+                    batch_data_[k] = v.to(device)
+
+                result_node, result_edge, mean_encoding, lnvar_encoding, z = model(batch_data_)
+
+                losses = loss_fn(
+                    batch_data=batch_data,
+                    result_node=result_node,
+                    result_edge=result_edge,
+                    mean_encoding=mean_encoding,
+                    lnvar_encoding=lnvar_encoding,
+                    alpha=args.alpha,
+                    loss1=loss1,
+                    loss2=loss2,
+                    beta=0, # AE performs better than VAE
+                    gamma=args.gamma,
+                    cls_auxiliary=args.cls_auxiliary,
+                    pred_property=model.encoder.property_proj(z) if args.cls_auxiliary else None,
+                    device=device)
+
+                loss = losses.get('loss')
                 optimizer.zero_grad()
-                # v_n = []
-                # v_v = []
-                # v_g = []
-                # for name, parameter in model.named_parameters():
-                #     v_n.append(name)
-                #     v_v.append(parameter.detach().cpu().numpy() if parameter is not None else [0])
-                #     v_g.append(parameter.grad.detach().cpu().numpy() if parameter.grad is not None else [0])
-                # for k in range(len(v_n)):
-                #     print('%s: %.3e ~ %.3e' % (v_n[k], np.min(v_v[k]).item(), np.max(v_v[k]).item()))
-                #     print('%s: %.3e ~ %.3e' % (v_n[k], np.min(v_g[k]).item(), np.max(v_g[k]).item()))
-                Loss.backward()
+                loss.backward()
                 optimizer.step()
                 warmup.step()
                 KL_coef.step()
 
-                print(
-                    f"data:{np.round((i+1)*self.mini_batch_size/size*100,3)}%,kl_coef:{KL_coef.coef()},loss:{np.round(Loss.item(), 5)},{np.round(mean_CE_node.item(), 5)},{np.round(mean_CE_edge.item(), 5)},{np.round(KL.item(), 5)},"
-                    f"{np.round(w_loss.item(), 5)},{np.round(logp_loss.item(), 5)},{np.round(tpsa_loss.item(), 5)}")
+                total_loss += loss.item()
+                num_batches += 1
+                train_losses.append({k:v.item() for k,v in losses.items()})
+                bar_str = "\n".join(f"{k}: {v.item()}" for k, v in losses.items())
+                pbar.set_postfix({"loss": bar_str})
+        avg_loss = total_loss / num_batches
+        print(f"Epoch {epoch + 1} Average Loss: {avg_loss}")
 
-                epoch_loss = np.append(epoch_loss,(Loss.item(),mean_CE_node.item(),mean_CE_edge.item(),KL.item(),w_loss.item(),logp_loss.item(),tpsa_loss.item()))
-            if (j+1)%1==0:
-                torch.save(model.state_dict(),os.path.join(model_path,f"vae_model_moses3_epoch{(j+1)}.pth"))
+        total_val_loss = 0
+        model.eval()
+        with torch.no_grad():
+            with tqdm(valid_loader, desc=f"Epoch {epoch + 1}/{args.epoch} (Validation)") as pbar:
+                for batch_data in pbar:
+                    batch_data_ = dict()
+                    for k, v in batch_data.items():
+                        batch_data_[k] = v.to(device)
 
-            with torch.no_grad():
-                loader2=MultiEpochsDataLoader(valid_data,self.mini_batch_size*4,shuffle=True,num_workers=4,drop_last=True)
-                mini_batch_data2=dict()
-                for i, tensors in enumerate(loader2):
-                    x, hs, layer_number, property, adj = tensors
-                    mini_batch_data2['x'] = x.to(self.device)
-                    mini_batch_data2['hs'] = hs.to(self.device)
-                    mini_batch_data2['layer_number'] = layer_number.to(self.device)
-                    mini_batch_data2['property'] = property.to(self.device)
-                    mini_batch_data2['adj'] = adj.to(self.device)
-                    result_node,result_edge,mean_encoding,lnvar_encoding,z = model.forward(batch_data=mini_batch_data2)
-                    pred_property=None
-                    if cls_auxiliary:
-                        pred_property=model.encoder.property_proj(z)
-                    try:
-                        Loss,mean_CE_node,mean_CE_edge,KL,w_loss,logp_loss,tpsa_loss = VAE_Loss3(
-                            mini_batch_data2,
-                            result_node,
-                            result_edge,
-                            mean_encoding,
-                            lnvar_encoding,
-                            alpha,
-                            pred_property=pred_property,
-                            loss1=self.loss1,
-                            loss2=self.loss2,
-                            beta=0,
-                            gamma=gamma,
-                            cls_auxiliary=cls_auxiliary,
-                            device=self.device)
+                    result_node, result_edge, mean_encoding, lnvar_encoding, z = model(batch_data_)
 
-                        print(f"epoch:{j} ,loss:{np.round(Loss.item(),5)},{np.round(mean_CE_node.item(),5)},{np.round(mean_CE_edge.item(),5)},{np.round(KL.item(),5)},"
-                            f"{np.round(w_loss.item(),5)},{np.round(logp_loss.item(),5)},{np.round(tpsa_loss.item(),5)}")
+                    losses = loss_fn(
+                        batch_data=batch_data,
+                        result_node=result_node,
+                        result_edge=result_edge,
+                        mean_encoding=mean_encoding,
+                        lnvar_encoding=lnvar_encoding,
+                        alpha=args.alpha,
+                        loss1=loss1,
+                        loss2=loss2,
+                        beta=0,
+                        gamma=args.gamma,
+                        cls_auxiliary=args.cls_auxiliary,
+                        pred_property=model.encoder.property_proj(z) if args.cls_auxiliary else None,
+                        device=device)
 
-                        valid_loss=np.append(valid_loss,(Loss.item(),mean_CE_node.item(),mean_CE_edge.item(),KL.item(),w_loss.item(),logp_loss.item(),tpsa_loss.item()))
-                    except:
-                        continue
+                    loss = losses.get('loss')
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    warmup.step()
+                    KL_coef.step()
 
-        return epoch_loss,valid_loss
+                    total_loss += loss.item()
+                    num_batches += 1
+                    train_losses.append({k: v.item() for k, v in losses.items()})
+                    bar_str = "\n".join(f"{k}: {v.item()}" for k, v in losses.items())
+                    pbar.set_postfix({"val_loss": bar_str})
 
+        avg_val_loss = total_val_loss / len(valid_loader)
+        valid_losses.append(avg_val_loss)
+        print(f"Epoch {epoch + 1} Average Validation Loss: {avg_val_loss}")
+        save_model(model, optimizer, epoch, save_path)
 
-def pretrain_model(args):
-    loss_path = os.path.join(os.path.abspath(''),"vae_loss")
-    if os.path.isdir(loss_path) is False:
-        os.makedirs(loss_path)
-    model = JTreeformer(
-            num_layers_encoder =args.num_layers_encoder,
-            num_layers_decoder =args.num_layers_decoder,
-            hidden_dim_encoder =args.hidden_dim_encoder,
-            expand_dim_encoder =args.expand_dim_encoder,
-            hidden_dim_decoder =args.hidden_dim_decoder,
-            expand_dim_decoder=args.expand_dim_decoder,
-            latent_space_dim=args.latent_space_dim,
-            num_head_encoder=args.num_head_encoder,
-            num_head_decoder=args.num_head_decoder,
-            num_node_type=args.num_node_type,
-            max_hs=args.max_hs,
-            max_degree=args.max_degree,
-            max_layer_num=args.max_layer_num,
-            max_brother_num=args.max_brother_num,
-            dropout=args.dropout,
-            dropout_rate=args.dropout_rate,
-            device=args.device,
-            feature_test=args.feature_test,
-            g_test=args.g_test
-    )
-
-    with open(args.train_path, "rb") as file:
-        train_data = pickle.load(file)
-    train_data=JTDataSet(train_data)
-    with open(args.valid_path, "rb") as file:
-        valid_data = pickle.load(file)
-    valid_data=JTDataSet(batch_data=valid_data)
-    print("data load done.")
-    if args.cls_auxiliary:
-
-        model.encoder.add_module('property_proj',
-                                 nn.Linear(model.encoder.hidden_dim,4).to(
-                                     args.device))
-        nn.init.xavier_normal_(model.encoder.property_proj.weight, gain=0.87 * (((12+ 2) ** 4) *12) ** (-1 / 16))
-        nn.init.constant_(model.encoder.property_proj.bias, 0)
-    train=VAE_Train(mini_batch_size=args.batch_size,epoch=args.epoch,device = args.device)
-    epoch_loss,valid_loss = train.train(
-        train_data=train_data,valid_data=valid_data,
-        model=model, lr=0.0001,separate_train=False,cls_auxiliary=args.cls_auxiliary)
-    pickle.dump(epoch_loss,open(os.path.join(loss_path,"vae_train_loss_moses3.pkl"),"wb"))
-    pickle.dump(valid_loss, open(os.path.join(loss_path,"vae_valid_loss_moses3.pkl"), "wb"))
-    print("loss save done.")
+    with open(os.path.join(os.getcwd(), "training_losses.pkl"), 'wb') as f:
+        pickle.dump(losses, f)
+    with open(os.path.join(os.getcwd(), "validation_losses.pkl"), 'wb') as f:
+        pickle.dump(valid_losses, f)
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
