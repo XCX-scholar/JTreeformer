@@ -1,20 +1,23 @@
 import sys
 import os
 sys.path.append(os.path.dirname(sys.path[0]))
+import sys
+import os
+sys.path.append(os.path.dirname(sys.path[0]))
+
 import torch
-import math
-import numpy as np
+from tqdm import tqdm
 
 from module.DDPM import GaussianDiffusion
 from Loss.Loss import DDPM_Loss
 import pickle
 import os
+from torch.utils.data import DataLoader, Dataset
+import argparse
 from module.jtreeformer_modules import lambda_lr
-from torch.utils.data import DataLoader,Dataset
-
+import math
 
 class MultiEpochsDataLoader(torch.utils.data.DataLoader):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._DataLoader__initialized = False
@@ -31,11 +34,6 @@ class MultiEpochsDataLoader(torch.utils.data.DataLoader):
 
 
 class _RepeatSampler(object):
-    """ Sampler that repeats forever.
-    Args:
-        sampler (Sampler)
-    """
-
     def __init__(self, sampler):
         self.sampler = sampler
 
@@ -43,112 +41,95 @@ class _RepeatSampler(object):
         while True:
             yield from iter(self.sampler)
 
-# dataset
 class EncodingDataSet(Dataset):
-    def __init__(self,batch_data):
-        super(EncodingDataSet, self).__init__()
-        self.x=batch_data['x'].cpu()
-
-    def __getitem__(self,index):
-        return self.x[index]
+    def __init__(self, data_path):
+        with open(data_path, 'rb') as f:
+            batch_data = pickle.load(f)
+            self.data = batch_data['x'].cpu()
 
     def __len__(self):
-        return self.x.shape[0]
+        return len(self.data)
 
-
-class DDPM_Train():
-    def __init__(self,step=2000,device="cuda:7",epoch=10,mini_batch_size=256):
-        self.step = step
-        self.device = torch.device(device)
-        self.epoch = epoch
-        self.mini_batch_size = mini_batch_size
-
-    def train(self,train_data:EncodingDataSet,valid_data,model:GaussianDiffusion,lr=0.005):
-        model_path = os.path.join(os.path.abspath(''), "ddpm")
-        if os.path.isdir(model_path) is False:
-            os.makedirs(model_path)
-        size=train_data.__len__()
-        optimizer = torch.optim.Adam(model.noise_net.parameters(),lr=lr)
-        lamb = lambda_lr(warmup_step=math.ceil(size*self.epoch/self.mini_batch_size*0.05),beta=math.log(500)/math.ceil(size*self.epoch/self.mini_batch_size*0.95))
-        warmup = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer,lr_lambda=lamb.lambda_lr)
-        epoch_loss = np.array([])
-        valid_loss=np.array([])
-        loader=DataLoader(train_data,batch_size=256,shuffle=True,num_workers=4,drop_last=True)
-        loader2=DataLoader(valid_data,batch_size=256,shuffle=True,num_workers=4,drop_last=True)
-
-        for j in range(self.epoch):
-
-            print("----------------epoch: "+str(j+1)+"----------------\n")
-            for i,x in enumerate(loader):
-
-                times = torch.randint(low=0,high=self.step,size=(x.shape[0],),device=self.device)
-
-                noise = torch.randn_like(x,device=self.device)
-                x_t = model.diffusion_sampling(x_start=x.to(self.device), times=times,noise=noise)
-                predicted_noise = model.noise_net(x_t, times)
-
-                Loss = DDPM_Loss(noise=noise,predicted_noise=predicted_noise,loss_type='l1',device=self.device)
-
-                optimizer.zero_grad()
-                Loss.backward()
-                optimizer.step()
-                warmup.step()
-
-                print(f"data:{round((i+1)*self.mini_batch_size/size*100,3)},loss:{Loss.item()}")
-
-                epoch_loss = np.append(epoch_loss,Loss.item())
-            if (j+1)%10==0:
-                torch.save(model.state_dict(),os.path.join(model_path,f"l1_ddim_model_moses3_epoch{(j+1)}.pth"))
-            with torch.no_grad():
-                for i,valid_x in enumerate(loader2):
-                    try:
-                        times = torch.randint(low=0,high=self.step,size=(valid_x.shape[0],),device=self.device)
-
-                        noise = torch.randn_like(valid_x,device=self.device)
-                        x_t = model.diffusion_sampling(x_start=valid_x.to(self.device), times=times,noise=noise)
-                        predicted_noise = model.noise_net(x_t, times)
-
-                        Loss = DDPM_Loss(noise=noise,predicted_noise=predicted_noise,loss_type='l1',device=self.device)
-                        print(f"epoch:{j},loss:{Loss.item()}")
-                        valid_loss = np.append(valid_loss, Loss.item())
-                    except:
-                        pass
-
-        return epoch_loss,valid_loss
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 def pretrain_model(args):
-    loss_path = os.path.join(os.path.abspath(''),'..',"DDPM_Loss")
-    if os.path.isdir(loss_path) is False:
-        os.makedirs(loss_path)
-    model=GaussianDiffusion(
+    train_dataset = EncodingDataSet(args.train_data_path)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+
+    val_dataset = EncodingDataSet(args.val_data_path)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    model = GaussianDiffusion(
         latent_space_dim=args.latent_space_dim,
         expand_factor=args.expand_factor,
         time_embedding_dim=args.time_embedding_dim,
         num_block=args.num_block,
         dropout=args.dropout,
         dropout_rate=args.dropout_rate,
-        Init_params=args.Init_params,
         noise_schedule=args.noise_schedule,
         num_sample_steps=args.num_sample_steps,
         device=args.device
-    )
-    print("model establish done.")
-    with open(args.train_path, "rb") as file:
-        train_data = pickle.load(file)
-    train_data=EncodingDataSet(train_data)
-    with open(args.valid_path, "rb") as file:
-        valid_data = pickle.load(file)
-    valid_data=EncodingDataSet(valid_data)
-    print("data load done.")
-    train=DDPM_Train(step=1000,device=args.device,epoch=args.epoch,mini_batch_size=args.batch_size)
-    epoch_loss,valid_loss = train.train(train_data=train_data,valid_data=valid_data,model=model,lr=0.005)
-    print("model save done.")
-    pickle.dump(epoch_loss,open(os.path.join(loss_path,"ddim_epoch_loss_moses3.pkl"),"wb"))
-    pickle.dump(valid_loss,open(os.path.join(loss_path,"ddim_valid_loss_moses3.pkl"),"wb"))
-    print("epoch loss save done.")
+    ).to(args.device)
+    criterion = DDPM_Loss
+    size = train_dataset.__len__()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    lamb = lambda_lr(warmup_step=math.ceil(size * args.epoch / args.batch_size * 0.05),
+                     beta=math.log(500) / math.ceil(size * args.epoch / args.batch_size * 0.95))
+    warmup = torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lamb.lambda_lr)
+    losses = []
+    val_losses = []
+    for epoch in range(args.epoch):
+        total_loss = 0
+        model.train()
+        with tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epoch}") as pbar:
+            for batch in pbar:
+                x_start = batch.to(args.device)
+                times = torch.randint(0, model.num_sample_steps, (x_start.shape[0],), device=args.device)
+                noise = torch.randn_like(x_start, device=args.device)
+                x_noisy = model.diffusion_sampling(x_start, times, noise)
+                pred_noise = model.noise_net(x_noisy, times)
+
+                loss = criterion(pred_noise, noise,loss_type=args.loss_type)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                warmup.step()
+
+                total_loss += loss.item()
+                losses.append(loss.item())
+                pbar.set_postfix({"loss": loss.item()})
+
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch+1} Average Loss: {avg_loss}")
+
+        total_val_loss = 0
+        model.eval()
+        with torch.no_grad():
+            with tqdm(val_loader, desc=f"Epoch {epoch + 1}/{args.epoch} (Validation)") as pbar:
+                for batch in pbar:
+                    x_start = batch['latent'].to(args.device)
+                    times = torch.randint(0, model.num_sample_steps, (x_start.shape[0],), device=args.device)
+                    noise = torch.randn_like(x_start, device=args.device)
+                    x_noisy = model.diffusion_sampling(x_start, times, noise)
+                    pred_noise = model.noise_net(x_noisy, times)
+
+                    loss = criterion(pred_noise, noise)
+                    total_val_loss += loss.item()
+                    pbar.set_postfix({"val_loss": loss.item()})
+
+        avg_val_loss = total_val_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
+        print(f"Epoch {epoch + 1} Average Validation Loss: {avg_val_loss}")
+
+    with open(os.path.join(os.getcwd(), "training_losses.pkl"), 'wb') as f:
+        pickle.dump(losses, f)
+    with open(os.path.join(os.getcwd(), "validation_losses.pkl"), 'wb') as f:
+        pickle.dump(val_losses, f)
+
+    torch.save(model.state_dict(), os.path.join(os.getcwd(), "trained_model.ckpt"))
 
 if __name__ == '__main__':
-    import argparse
     parser=argparse.ArgumentParser()
     parser.add_argument('--train_path',default=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3',"MolDataSet","train_encoding_moses3.pkl"))
     parser.add_argument('--valid_path',default=os.path.join(os.path.abspath(''),'GraphLatentDiffusion3',"MolDataSet","valid_encoding_moses3.pkl"))
