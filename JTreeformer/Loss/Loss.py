@@ -11,11 +11,11 @@ def VAE_Loss3(
         lnvar_encoding,
         alpha,
         pred_property,
-        loss1,
-        loss2,
         beta=0,
         gamma=0.2,
         cls_auxiliary=True,
+        loss1=nn.CrossEntropyLoss(reduction="mean",ignore_index=0),
+        loss2=nn.CrossEntropyLoss(reduction="mean",ignore_index=0),
         device=torch.device("cuda:0")
     ):
     x,adj_edge_feature,layers = batch_data['x'],batch_data['adj'],batch_data['layer_number']
@@ -71,13 +71,31 @@ def VAE_Loss3(
         logp_loss = F.mse_loss(pred_property[:,1], property[:,1])
         tpsa_loss = F.mse_loss(pred_property[:,2], property[:,2])
         property_loss=w_loss+logp_loss+tpsa_loss
-        return (mean_CE_node + alpha*mean_CE_edge)/(1+alpha) + beta*KL+gamma*property_loss,mean_CE_node,mean_CE_edge,KL,w_loss,logp_loss,tpsa_loss
+        result = {
+            'loss':(mean_CE_node + alpha*mean_CE_edge)/(1+alpha) + beta*KL+gamma*property_loss,
+             'ce_node':mean_CE_node,
+             'ce_':mean_CE_edge,
+             'kld':KL,
+             'mse_w':w_loss,
+             'mse_logp':logp_loss,
+             'mse_tpsa':tpsa_loss
+        }
+        return result
     else:
-        return (mean_CE_node + alpha*mean_CE_edge)/(1+alpha) + beta*KL,mean_CE_node,mean_CE_edge,KL,0
+        result = {
+            'loss':(mean_CE_node + alpha*mean_CE_edge)/(1+alpha) + beta*KL,
+             'ce_node':mean_CE_node,
+             'ce_':mean_CE_edge,
+             'kld':KL,
+             'mse_w':torch.zeros(1),
+             'mse_logp':torch.zeros(1),
+             'mse_tpsa':torch.zeros(1)
+        }
+        return result
 
 
 '''calculate the loss for the DDPM model'''
-def DDPM_Loss(noise,predicted_noise,loss_type,device=torch.device("cuda:0")):
+def DDPM_Loss(noise,predicted_noise,loss_type='l1'):
     if loss_type == "l1":
         losses = F.l1_loss(predicted_noise, noise, reduction='mean')
     elif loss_type == "l2":
@@ -87,4 +105,4 @@ def DDPM_Loss(noise,predicted_noise,loss_type,device=torch.device("cuda:0")):
     else:
         raise NotImplementedError()
 
-    return losses.to(device)
+    return losses
