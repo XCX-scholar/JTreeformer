@@ -21,6 +21,17 @@ class TimeEmbeddings(nn.Module):
 
 
 class Block(nn.Module):
+    """
+    SkipNet Block.
+
+    Args:
+        in_dim (int): Input dimension.
+        out_dim (int): Output dimension.
+        time_embedding_dim (int): Time embedding dimension.
+        dropout (bool): Whether to use dropout.
+        dropout_rate (float): Dropout rate.
+        device (str/torch.device): Device to use.
+    """
     def __init__(
         self,
         in_dim,
