@@ -39,6 +39,21 @@ def sigmoid_beta_schedule(t):
     return torch.sigmoid(betas) * (beta_end - beta_start) + beta_start
 
 class GaussianDiffusion(nn.Module):
+    """
+    Gaussian Diffusion Model.
+
+    Args:
+        latent_space_dim (int): Dimension of the latent space.
+        expand_factor (int): Expansion factor for hidden layers in SkipNet.
+        time_embedding_dim (int): Dimension of time embeddings.
+        num_block (int): Number of blocks in SkipNet.
+        dropout (bool): Whether to use dropout.
+        dropout_rate (float): Dropout rate.
+        noise_schedule (str): Noise schedule type ('linear', 'cosine', etc.).
+        num_sample_steps (int): Number of sampling steps.
+        device (str/torch.device): Device to use for training (e.g., 'cuda:0', 'cpu').
+
+    """
     def __init__(
         self,
         latent_space_dim=512,
@@ -109,7 +124,20 @@ class GaussianDiffusion(nn.Module):
 
 
     def denoising_sample(self, x, t, t_minus_one,eta=0.2,grad_scale=1,condition_gradient=None):
+        """
+        Denoising step (DDIM).
 
+        Args:
+            x (torch.Tensor): Current sample.
+            t (torch.Tensor): Current timestep.
+            t_minus_one (torch.Tensor): Previous timestep.
+            eta (float): DDIM eta parameter.
+            grad_scale (float): Scaling factor for condition gradient.
+            condition_gradient (torch.Tensor, optional): Gradient of the condition.
+
+        Returns:
+            torch.Tensor: Updated sample.
+        """
         t_sqrt_one_minus_alphas_cumprod = extract(self.sqrt_one_minus_alphas_cumprod, t, x.shape).to(self.device)
         t_minus_one_sqrt_one_minus_alphas_cumprod = extract(self.sqrt_one_minus_alphas_cumprod,t_minus_one, x.shape).to(self.device)
         t_sqrt_alphas_cumprod=extract(self.sqrt_alphas_cumprod, t, x.shape).to(self.device)
@@ -131,8 +159,17 @@ class GaussianDiffusion(nn.Module):
     #         predict_sample = self.denoising_sample(predict_sample,torch.full((shape[0],),i,dtype=torch.long),i)
 
     def diffusion_sampling(self,x_start, times, noise):
+        """
+        Forward diffusion process.
 
+        Args:
+            x_start (torch.Tensor): Starting sample.
+            times (torch.Tensor): Timesteps.
+            noise (torch.Tensor): Noise tensor.
 
+        Returns:
+            torch.Tensor: Noisy sample at the given timesteps.
+        """
         sqrt_alphas_cumprod_t = extract(self.sqrt_alphas_cumprod, times, x_start.shape).to(self.device)
         sqrt_one_minus_alphas_cumprod_t = extract(self.sqrt_one_minus_alphas_cumprod, times, x_start.shape).to(self.device)
 
