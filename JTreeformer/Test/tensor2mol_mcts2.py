@@ -478,7 +478,8 @@ def PredictNextNode(
         node_list:torch.Tensor,
         hs:torch.Tensor,
         adj:torch.Tensor,
-        layer_number:torch.Tensor
+        layer_number:torch.Tensor,
+        use_kv_cache=False
     ):
     assert latent_encoding.shape[0]==1
     num_node=node_list.shape[1]
@@ -526,16 +527,26 @@ def PredictNextNode(
             brother_order=bro_ord,
             layer_number=layer_number.long()
         )
+        if not use_kv_cache:
+            decoder_node_feature = torch.cat(
+                [decoder_node_feature,latent_encoding.unsqueeze(1).repeat(1, num_node + 1, 1)],
+                dim=-1)
+            decoder_node_feature = model.fusion_attn(x=decoder_node_feature, attn_mask=attn_mask, padding_mask=padding_mask)
 
-        decoder_node_feature = torch.cat(
-            [decoder_node_feature,latent_encoding.unsqueeze(1).repeat(1, num_node + 1, 1)],
-            dim=-1)
-        decoder_node_feature = model.fusion_attn(x=decoder_node_feature, attn_mask=attn_mask, padding_mask=padding_mask)
+            result_node, node_decoding = model.decoder(x=decoder_node_feature, T=T, thetas=model.thetas, attn_mask=attn_mask,
+                                                      padding_mask=padding_mask, attn_bias=decoder_bias)
+            return result_node[:,-1,:],node_decoding
+        else:
+            decoder_node_feature = torch.cat(
+                [decoder_node_feature, latent_encoding.unsqueeze(1).repeat(1, num_node + 1, 1)],
+                dim=-1)
+            decoder_node_feature = model.fusion_attn(x=decoder_node_feature, attn_mask=attn_mask,
+                                                     padding_mask=padding_mask)
 
-        result_node, node_decoding = model.decoder(x=decoder_node_feature, T=T, thetas=model.thetas, attn_mask=attn_mask,
-                                                  padding_mask=padding_mask, attn_bias=decoder_bias)
-
-    return result_node[:,-1,:],node_decoding
+            result_node, node_decoding = model.decoder(x=decoder_node_feature[:,-2:-1,:], T=T, thetas=model.thetas,
+                                                       attn_mask=attn_mask,
+                                                       padding_mask=None, attn_bias=decoder_bias,use_kv_cache=use_kv_cache)
+            return result_node, node_decoding
 
 
 def PredictRelation(
@@ -570,7 +581,8 @@ def Tensor2MolTree(model:JTreeformer,
                    use_black_list=False,
                    filter_sington=False,
                    bond_limit=False,
-                   checking_charge=False
+                   checking_charge=False,
+                   use_kv_cache=False
                    ):
         assert latent_encoding.shape[0] == 1
 
@@ -586,7 +598,7 @@ def Tensor2MolTree(model:JTreeformer,
         if use_black_list:
             black_list=[i+1 for i in range(len(vocab.vocab)-1) if (len(vocab.vocab[i+1])==2 and vocab.vocab[i+1].__contains__('C') and vocab.vocab[i+1]!='CC')]+[vocab.vmap['C']]
 
-        next_node_logit,node_decoding=PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number)
+        next_node_logit,node_decoding=PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number,use_kv_cache=use_kv_cache)
         prob_node = torch.softmax(next_node_logit, dim=-1)
         if prob_decode_node:
             sort_wid = torch.multinomial(prob_node[:,:vocab.vmap['stop']],1)
@@ -613,7 +625,7 @@ def Tensor2MolTree(model:JTreeformer,
         stop=False
         with torch.no_grad():
             while(not stop):
-                next_node_logit,node_decoding = PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number)
+                next_node_logit,node_decoding = PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number,use_kv_cache=use_kv_cache)
                 next_node_logit=next_node_logit[:,:vocab.vmap['stop']+1]
                 # print(next_node_logit.shape,vocab.vmap['stop'])
                 if prob_decode_node:
@@ -723,6 +735,7 @@ def Tensor2MolTree(model:JTreeformer,
             for i,node in enumerate(all_nodes):
                 node.nid=i+1
 
+        model.decoder._reset_cache()
         return root, all_nodes
 
 
