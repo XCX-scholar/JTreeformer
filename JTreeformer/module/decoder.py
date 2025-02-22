@@ -62,7 +62,15 @@ class DecoderLayer(nn.Module):
         )
 
         if not self.g_test:
-            x2 = F.relu(self.dagcn_proj(torch.bmm(T,x)))
+            if not use_kv_cache:
+                key = self.self_attn.k_proj(x)
+                x2 = F.relu(self.dagcn_proj(torch.bmm(T,key)))
+            else:
+                expected_seq_len = self.self_attn.kv_cache_key.shape[1]
+                if T is not None and T.shape[-1] != expected_seq_len:
+                    raise ValueError("Graph convolution kernal length does not match cached sequence length")
+                key = self.self_attn.kv_cache_key
+                x2 = F.relu(self.dagcn_proj(torch.bmm(T[:,-1,:].unsqueeze(-2), key)))
             x=torch.cat([x1,x2],dim=-1)
             x = self.fusion(x)
         else:
