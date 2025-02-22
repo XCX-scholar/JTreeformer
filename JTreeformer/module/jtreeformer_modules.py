@@ -64,6 +64,7 @@ class NodeFeature(nn.Module):
         node_feature = torch.cat([virtual_token_feature,node_feature],dim=1)
         return node_feature
 
+
 class MultiHeadAttention(nn.Module):
     def __init__(
             self,
@@ -76,10 +77,9 @@ class MultiHeadAttention(nn.Module):
             self_attention=True,
             dropout=False,
             dropout_rate=0.5,
-            device="cuda:0"
+            device="cuda:0",
     ):
-
-        super(MultiHeadAttention,self).__init__()
+        super(MultiHeadAttention, self).__init__()
         self.device = torch.device(device)
         self.hidden_dim = hidden_dim
         self.num_head = num_head
@@ -89,81 +89,79 @@ class MultiHeadAttention(nn.Module):
         self.v_dim = v_dim
         self.scaling = self.head_dim ** -0.5
         self.self_attention = self_attention
-        self.k_proj = nn.Linear(self.k_dim,hidden_dim, bias=require_bias).to(self.device)
-        self.q_proj = nn.Linear(self.q_dim,hidden_dim, bias=require_bias).to(self.device)
-        self.v_proj = nn.Linear(self.v_dim,hidden_dim, bias=require_bias).to(self.device)
+        self.k_proj = nn.Linear(self.k_dim, hidden_dim, bias=require_bias).to(self.device)
+        self.q_proj = nn.Linear(self.q_dim, hidden_dim, bias=require_bias).to(self.device)
+        self.v_proj = nn.Linear(self.v_dim, hidden_dim, bias=require_bias).to(self.device)
+        self.register_buffer('kv_cache_key', None)
+        self.register_buffer('kv_cache_value', None)
+
+        # Dropout
         self.dropout = dropout
         if self.dropout:
             self.Dropout = nn.Dropout(p=dropout_rate)
-        # self.reset_parameters()
 
-    def reset_parameters(self):
-        if self.k_dim == self.v_dim and self.k_dim == self.q_dim:
-            nn.init.xavier_uniform_(self.k_proj.weight, gain= 2 ** -0.5)
-            nn.init.xavier_uniform_(self.v_proj.weight, gain= 2 ** -0.5)
-            nn.init.xavier_uniform_(self.q_proj.weight, gain= 2 ** -0.5)
+    def _reset_cache(self):
+        self.kv_cache_key = None
+        self.kv_cache_value = None
+
+    def forward(self,x,attn_bias=None,attn_mask=None,padding_mask=None,key=None,value=None,use_kv_cache=False):
+        num_graph, tgt_node, hidden_dim = x.size()
+        if use_kv_cache:
+            if self.self_attention:
+                if self.kv_cache_key is not None:
+                    expected_seq_len = self.kv_cache_key.size(1) + tgt_node
+                    if attn_mask is not None and attn_mask.size(-1) != expected_seq_len:
+                        raise ValueError("Attention mask length does not match cached sequence length")
+                    key = torch.cat([self.kv_cache_key, self.k_proj(x)], dim=1)
+                    value = torch.cat([self.kv_cache_value, self.v_proj(x)], dim=1)
+                else:
+                    key = self.k_proj(x)
+                    value = self.v_proj(x)
+                self.kv_cache_key = key.detach()
+                self.kv_cache_value = value.detach()
+            else:
+                raise ValueError("Only support self-attention KV-cache.")
         else:
-            nn.init.xavier_uniform_(self.k_proj.weight)
-            nn.init.xavier_uniform_(self.v_proj.weight)
-            nn.init.xavier_uniform_(self.q_proj.weight)
+            if not self.self_attention:
+                if key is not None and value is not None:
+                    key = self.k_proj(key)
+                    value = self.v_proj(value)
+                else:
+                    raise ValueError("Key,value should not be provided for cross-attention")
+            else:
+                key = self.k_proj(x)
+                value = self.v_proj(x)
+        q = self.q_proj(x)
+        q *= self.scaling
+        q = q.view(num_graph, tgt_node, self.num_head, self.head_dim).permute(0, 2, 1, 3)
+        key = key.view(num_graph, -1, self.num_head, self.head_dim).permute(0, 2, 3, 1)  # [B, H, D, S]
+        value = value.view(num_graph, -1, self.num_head, self.head_dim).permute(0, 2, 1, 3)
 
-    def forward(self,x,attn_bias=None,attn_mask=None,padding_mask=None,key=None,value=None):
-        num_graph,tgt_node,hidden_dim = x.size()
-        if self.self_attention == False:
-            _,src_node,_ = key.size()
-            q = self.q_proj(x)
-            k = self.k_proj(key)
-            v = self.v_proj(value)
-            q *= self.scaling
-        else:
-            src_node = tgt_node
-            q = self.q_proj(x)
-            k = self.k_proj(x)
-            v = self.v_proj(x)
-            q *= self.scaling
-        q = q.reshape(num_graph,tgt_node,self.num_head,self.head_dim).permute(0,2,1,3).reshape(
-            num_graph*self.num_head,
-            tgt_node,
-            self.head_dim)
-        k = k.reshape(num_graph, src_node, self.num_head, self.head_dim).permute(0, 2, 1, 3).reshape(
-            num_graph * self.num_head,
-            src_node,
-            self.head_dim)
-        v = v.reshape(num_graph, src_node, self.num_head, self.head_dim).permute(0, 2, 1, 3).reshape(
-            num_graph * self.num_head,
-            src_node,
-            self.head_dim)
-        attn_weights = torch.bmm(q, k.transpose(1, 2))
-        # dim:[num_graph*num_head,tgt_node,src_node]
-
-        attn_weights = attn_weights.reshape(num_graph, self.num_head, tgt_node, src_node)
+        attn_weights = torch.matmul(q, key)  # [B, H, T, S]
         if attn_bias is not None:
             attn_weights += attn_bias
-        #
+
         if attn_mask is not None:
-            # print(attn_mask)
             attn_weights = attn_weights.masked_fill(
                 attn_mask.unsqueeze(0).unsqueeze(1),
                 float("-inf")
             )
         if padding_mask is not None:
-
             attn_weights = attn_weights.masked_fill(
                 padding_mask.unsqueeze(1).unsqueeze(2),
                 float("-inf")
             )
 
-        if self.dropout:
-            attn_weights = self.Dropout(attn_weights).to(self.device)
-        attn_weights = attn_weights.reshape(num_graph*self.num_head, tgt_node, src_node)
-        attn_prob = torch.softmax(attn_weights, dim=-1)
-        # print(attn_prob)
-        attn = torch.bmm(attn_prob,v)
-        # print(attn)
-        attn = attn.reshape(num_graph,self.num_head,tgt_node,self.head_dim).permute(0,2,1,3).reshape(num_graph,tgt_node,self.hidden_dim)
-        # dim:[num_graph,tgt_node,hidden_dim]
+        attn_weights = torch.softmax(attn_weights, dim=-1)
 
-        return attn
+        if self.dropout:
+            attn_weights = self.Dropout(attn_weights)
+
+        attn_output = torch.matmul(attn_weights, value)
+        attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
+        attn_output = attn_output.view(num_graph, tgt_node, self.hidden_dim)
+
+        return attn_output
 
 class AttentionBias(nn.Module):
     def __init__(
