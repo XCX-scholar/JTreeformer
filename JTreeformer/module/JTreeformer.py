@@ -58,7 +58,6 @@ class JTreeformer(nn.Module):
         self.dropout = dropout
         self.dropout_rate = dropout_rate
         self.latent_space_dim=latent_space_dim
-
         self.encoder_node_feature = NodeFeature(
             num_node_type=num_node_type,
             max_hs=max_hs,
@@ -69,7 +68,6 @@ class JTreeformer(nn.Module):
             device=device,
             feature_test=feature_test
         )
-
         self.decoder_node_feature = NodeFeature(
             num_node_type=num_node_type,
             max_hs=max_hs,
@@ -120,7 +118,8 @@ class JTreeformer(nn.Module):
                                 device=device,
                                 num_head=num_head_decoder,
                                 dropout=dropout,
-                                g_test=g_test)
+                                g_test=g_test
+                               )
 
         self.adj_feature = nn.Embedding(num_node_type + 2, hidden_dim_decoder, padding_idx=0).to(self.device)
 
@@ -163,7 +162,7 @@ class JTreeformer(nn.Module):
         adj=batch_data['adj'].to(self.device)
         layer_number=batch_data['layer_number'].to(self.device)
         hs=batch_data['hs'].to(self.device)
-        num_graph,num_node = x.shape[:2]
+        num_graph,num_node = adj.shape[:2]
 
 
         attn_mask = torch.triu(torch.ones(num_node+1,num_node+1),diagonal=1).bool().to(self.device)
