@@ -45,7 +45,10 @@ class DecoderLayer(nn.Module):
         self.ff1 = nn.Linear(hidden_dim, expand_dim).to(self.device)
         self.ff2 = nn.Linear(expand_dim, hidden_dim).to(self.device)
 
-    def forward(self,x,T,attn_bias,attn_mask,padding_mask):
+    def _reset_cache(self):
+        self.self_attn._reset_cache()
+
+    def forward(self,x,T,attn_bias,attn_mask,padding_mask,use_kv_cache=False):
 
         residual = x
         if self.sandwich_ln:
@@ -55,6 +58,7 @@ class DecoderLayer(nn.Module):
             attn_bias=attn_bias,
             padding_mask=padding_mask,
             attn_mask=attn_mask,
+            use_kv_cache=use_kv_cache
         )
 
         if not self.g_test:
@@ -136,6 +140,10 @@ class Decoder(nn.Module):
             init = init_params(beta=beta)
             self.apply(init.init_params)
 
+    def _reset_cache(self):
+        for l in self.layers:
+            l._reset_cache()
+
     def forward(
             self,
             x,
@@ -145,6 +153,7 @@ class Decoder(nn.Module):
             attn_bias,
             padding_mask,
             perturb=None,
+            use_kv_cache=False
     ):
         if perturb is not None:
             x[:, 1:, :] += perturb
@@ -153,7 +162,7 @@ class Decoder(nn.Module):
         if self.embed_ln is not None:
             x = self.embed_ln(x,[self.hidden_dim,])
         # print(x.shape)
-        num_graph,num_node=x.shape[:2]
+        num_graph,num_node=T.shape[:2]
 
         cnt = 0
         for i,layer in enumerate(self.layers):
@@ -166,6 +175,7 @@ class Decoder(nn.Module):
                 padding_mask=padding_mask,
                 attn_mask=attn_mask,
                 attn_bias=attn_bias,
+                use_kv_cache=use_kv_cache
             )
         node_logit=F.relu(x)
         node_logit = self.node_logit_proj(node_logit)
