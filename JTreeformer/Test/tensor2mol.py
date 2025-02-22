@@ -138,20 +138,20 @@ def dfs_assemble(all_nodes, cur_mol, global_amap, fa_amap, cur_node, fa_node,che
 
 
 def PredictNextNode(
-        model:JTreeformer,
-        latent_encoding:torch.Tensor,
-        node_list:torch.Tensor,
-        hs:torch.Tensor,
-        adj:torch.Tensor,
-        layer_number:torch.Tensor
-    ):
-    assert latent_encoding.shape[0]==1
-    num_node=node_list.shape[1]
-    num_graph=1
+        model: JTreeformer,
+        latent_encoding: torch.Tensor,
+        node_list: torch.Tensor,
+        hs: torch.Tensor,
+        adj: torch.Tensor,
+        layer_number: torch.Tensor,
+        use_kv_cache=False
+):
+    assert latent_encoding.shape[0] == 1
+    num_node = node_list.shape[1]
+    num_graph = 1
     with torch.no_grad():
-        attn_mask = torch.triu(torch.ones(num_node+1,num_node+1),diagonal=1).bool().to(model.device)
+        attn_mask = torch.triu(torch.ones(num_node + 1, num_node + 1), diagonal=1).bool().to(model.device)
         padding_mask = (node_list[:, :]).eq(0).to(model.device)
-        # dim[num_graph,num_node,1]
         padding_mask_cls = torch.zeros(num_graph, 1, device=padding_mask.device, dtype=padding_mask.dtype)
         padding_mask = torch.cat((padding_mask_cls, padding_mask), dim=1).to(model.device)
 
@@ -164,11 +164,11 @@ def PredictNextNode(
         father_idx = torch.arange(num_node + 1, device=flag_adj.device).unsqueeze(0).unsqueeze(1).repeat(num_graph,
                                                                                                          num_node, 1)
 
-        father_position = father_idx[flag_adj.eq(1)].reshape(num_graph,num_node)
-        bro_ord=torch.arange(1,num_node+1,device=model.device).unsqueeze(0).repeat(num_graph,1)
-        bro_ord=bro_ord-father_position
-        bro_ord[flag.eq(1)]=0
-        bro_ord=bro_ord.long()
+        father_position = father_idx[flag_adj.eq(1)].reshape(num_graph, num_node)
+        bro_ord = torch.cumsum(masked_adj, dim=-2)
+        bro_ord = torch.gather(bro_ord, dim=-1, index=(father_position - 1).clamp(min=0).unsqueeze(-1))
+        bro_ord[flag.eq(1)] = 0
+        bro_ord = bro_ord.long().reshape(num_graph, num_node)
         adj_with_cls = torch.cat([torch.ones(num_graph, num_node, 1, device=model.device, dtype=adj.dtype), masked_adj],
                                  dim=2)
         adj_with_cls = torch.cat(
@@ -192,16 +192,29 @@ def PredictNextNode(
             brother_order=bro_ord,
             layer_number=layer_number.long()
         )
+        if not use_kv_cache:
+            decoder_node_feature = torch.cat(
+                [decoder_node_feature, latent_encoding.unsqueeze(1).repeat(1, num_node + 1, 1)],
+                dim=-1)
+            decoder_node_feature = model.fusion_attn(x=decoder_node_feature, attn_mask=attn_mask,
+                                                     padding_mask=padding_mask)
 
-        decoder_node_feature = torch.cat(
-            [decoder_node_feature,latent_encoding.unsqueeze(1).repeat(1, num_node + 1, 1)],
-            dim=-1)
-        decoder_node_feature = model.fusion_attn(x=decoder_node_feature, attn_mask=attn_mask, padding_mask=padding_mask)
+            result_node, node_decoding = model.decoder(x=decoder_node_feature, T=T, thetas=model.thetas,
+                                                       attn_mask=attn_mask,
+                                                       padding_mask=padding_mask, attn_bias=decoder_bias)
+            return result_node[:, -1, :], node_decoding
+        else:
+            decoder_node_feature = torch.cat(
+                [decoder_node_feature, latent_encoding.unsqueeze(1).repeat(1, num_node + 1, 1)],
+                dim=-1)
+            decoder_node_feature = model.fusion_attn(x=decoder_node_feature, attn_mask=attn_mask,
+                                                     padding_mask=padding_mask)
 
-        result_node, node_decoding = model.decoder(x=decoder_node_feature, T=T, thetas=model.thetas, attn_mask=attn_mask,
-                                                  padding_mask=padding_mask, attn_bias=decoder_bias)
-
-    return result_node[:,-1,:],node_decoding
+            result_node, node_decoding = model.decoder(x=decoder_node_feature[:, -2:-1, :], T=T, thetas=model.thetas,
+                                                       attn_mask=attn_mask,
+                                                       padding_mask=None, attn_bias=decoder_bias,
+                                                       use_kv_cache=use_kv_cache)
+            return result_node, node_decoding
 
 def PredictRelation(
         model:JTreeformer,
@@ -235,7 +248,8 @@ def Tensor2MolTree(model:JTreeformer,
                    use_black_list=False,
                    filter_sington=False,
                    bond_limit=False,
-                   checking_charge=False
+                   checking_charge=False,
+                   use_kv_cache=False
                    ):
         assert latent_encoding.shape[0] == 1
 
@@ -250,7 +264,7 @@ def Tensor2MolTree(model:JTreeformer,
         hs=torch.zeros((1, num_node), dtype=torch.long, device=torch.device(device))
         adj = torch.full((1,num_node,num_node),fill_value=1,dtype=torch.long,device=torch.device(device))
         layer_number=torch.zeros((1,num_node), dtype=torch.long, device=torch.device(device))
-        next_node_logit,node_decoding=PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number)
+        next_node_logit,node_decoding=PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number,use_kv_cache=use_kv_cache)
         prob_node = torch.softmax(next_node_logit, dim=-1)
         if prob_decode_node:
             while (True):
@@ -290,7 +304,7 @@ def Tensor2MolTree(model:JTreeformer,
 
             while(not stop):
 
-                next_node_logit,node_decoding = PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number)
+                next_node_logit,node_decoding = PredictNextNode(model,latent_encoding,node_list,hs,adj,layer_number,use_kv_cache=use_kv_cache)
                 next_node_logit = next_node_logit[:, :vocab.vmap['stop'] + 1]
                 if prob_decode_node:
                     prob_node = torch.softmax(next_node_logit, dim=-1)
@@ -401,6 +415,8 @@ def Tensor2MolTree(model:JTreeformer,
 
             for i,node in enumerate(all_nodes):
                 node.nid=i+1
+
+        model.decoder._reset_cache()
 
         return root, all_nodes
 
