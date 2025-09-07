@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Batch
 from typing import Dict
-from utils.config import ModelConfig
+from utils.config import VAEConfig
 from models.common_layers import NodeFeaturizer, AttentionBias
 from models.encoder import Encoder
 from models.decoder import Decoder
@@ -16,7 +16,7 @@ class JTreeformer(nn.Module):
     Includes auxiliary property prediction and dynamic `hs` calculation for decoding.
     """
 
-    def __init__(self, config: ModelConfig, vocab: Dict[str, int]):
+    def __init__(self, config: VAEConfig, vocab: Dict[str, int]):
         super().__init__()
         self.config = config
         self.vocab = vocab
