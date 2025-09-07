@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from torch_geometric.data import Batch
 import torch.nn.functional as F
 
-from data_processing.dataset import TreeDataset
+from data_processing.dataset import TreeDataset, LatentDataset
 
 
 def collate_fn(batch):
@@ -44,6 +44,12 @@ def collate_fn(batch):
 
     return pyg_batch
 
-def create_dataloader(dataset_path: str, batch_size: int, shuffle: bool = True, num_workers: int = 0):
+def create_vae_dataloader(dataset_path: str, batch_size: int, shuffle: bool = True, num_workers: int = 0):
+    """ Creates a DataLoader for the VAE's TreeDataset. """
     dataset = TreeDataset(lmdb_path=dataset_path)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=collate_fn)
+
+def create_ddpm_dataloader(dataset_path: str, batch_size: int, shuffle: bool = True, num_workers: int = 0):
+    """ Creates a DataLoader for the DDPM's LatentDataset. """
+    dataset = LatentDataset(latent_path=dataset_path)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
