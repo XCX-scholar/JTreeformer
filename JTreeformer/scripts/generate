@@ -1,0 +1,235 @@
+import os
+import argparse
+import torch
+import rdkit
+from tqdm import tqdm
+import copy
+
+from models.diffusion_model import DiffusionModel
+from models.jtreeformer import JTreeformer
+from utils.config import VAEConfig, DDPMConfig
+from models.noise_predictor import NoisePredictorMLP
+
+from jtnn_utils.vocab import Vocab
+from jtnn_utils.mol_tree import MolTreeNode
+from jtnn_utils.chemutils import get_mol
+
+from mol_utils import MolTree2Mol, have_slots, can_assemble
+
+
+def tensor_to_mol_tree(model: JTreeformer, z: torch.Tensor, vocab: Vocab, max_decode_step: int) -> (MolTreeNode, list):
+    """
+    Decodes a latent vector `z` into a molecule tree structure using an
+    autoregressive process guided by chemical validity checks.
+    """
+    model.decoder.reset_kv_cache()
+    batch_size = z.size(0)
+    device = z.device
+
+    current_features = model.latent_to_decoder_proj(z).unsqueeze(1)
+
+    # State tracking
+    paths = [[0] for _ in range(batch_size)]
+    adj_matrices = torch.zeros(batch_size, max_decode_step + 1, max_decode_step + 1, device=device)
+    all_nodes = []
+    assembly_candidates = []  # Stores (MolTreeNode, slots) tuples
+
+    with torch.no_grad():
+        for step in range(max_decode_step):
+            current_seq_len = step + 1
+            attn_bias = model.decoder_attn_bias(adj_matrices[:, :current_seq_len, :current_seq_len])
+
+            z_broadcasted = z.unsqueeze(1)
+            fused_features = model.latent_fusion_proj(
+                torch.cat([current_features, z_broadcasted], dim=-1)
+            )
+
+            node_logits, relation_logits = model.decoder(
+                x=fused_features, edge_index=None,
+                attn_bias=attn_bias, padding_mask=None, use_kv_cache=True
+            )
+
+            # --- Search for a chemically valid next node and its connection ---
+            found_valid_node = False
+
+            # Get top-k node candidates
+            node_logits[0, -1, 0] = -float('inf')  # Don't predict padding
+            _, top_node_indices = torch.sort(node_logits[0, -1, :], descending=True)
+
+            for next_node_wid_tensor in top_node_indices[:15]:  # Top 15 node candidates
+                next_node_wid = next_node_wid_tensor.item()
+                if next_node_wid == vocab.vmap['stop']: continue
+
+                cand_node_y = MolTreeNode(vocab.get_smiles(next_node_wid))
+
+                # Get top-k relation candidates
+                max_r = len(paths[0]) - 1
+                valid_logits = relation_logits[0, -1, :max_r + 1]
+                _, top_relation_indices = torch.sort(valid_logits, descending=True)
+
+                for r_tensor in top_relation_indices[:5]:  # Top 5 relation candidates
+                    r = r_tensor.item()
+                    parent_path_idx = len(paths[0]) - 1 - r
+                    parent_node_idx_in_seq = paths[0][parent_path_idx]
+
+                    # Root node connection (must connect to latent vector at idx 0)
+                    if step == 0:
+                        if parent_node_idx_in_seq == 0:
+                            found_valid_node = True
+                            break
+                        else:
+                            continue
+
+                    # Non-root node connection, perform chemical checks
+                    parent_node, parent_slots = assembly_candidates[parent_node_idx_in_seq - 1]
+
+                    # Use copies for checks to avoid modifying state
+                    fa_slot_copy = parent_slots[:]
+                    ch_slots_copy = vocab.get_slots(vocab.get_index(cand_node_y.smiles))[:]
+                    node_x_check = copy.deepcopy(parent_node)
+                    node_y_check = copy.deepcopy(cand_node_y)
+
+                    if have_slots(fa_slot_copy, ch_slots_copy) and can_assemble(node_x_check, node_y_check):
+                        found_valid_node = True
+                        break
+
+                if found_valid_node:
+                    final_next_node_id_tensor = next_node_wid_tensor
+                    final_r_tensor = r_tensor
+                    break
+
+            if not found_valid_node:
+                break 
+
+            # --- Update state with the valid node and connection ---
+            parent_path_idx = len(paths[0]) - 1 - final_r_tensor.item()
+            parent_node_idx_in_seq = paths[0][parent_path_idx]
+            new_node_idx_in_seq = step + 1
+
+            adj_matrices[0, parent_node_idx_in_seq, new_node_idx_in_seq] = 1
+            adj_matrices[0, new_node_idx_in_seq, parent_node_idx_in_seq] = 1
+            paths[0] = paths[0][:parent_path_idx + 1] + [new_node_idx_in_seq]
+
+            new_node = MolTreeNode(vocab.get_smiles(final_next_node_id_tensor.item()))
+            new_node.idx = len(all_nodes)
+
+            if step > 0:
+                parent_node = all_nodes[parent_node_idx_in_seq - 1]
+                new_node.neighbors.append(parent_node)
+                parent_node.neighbors.append(new_node)
+
+            all_nodes.append(new_node)
+            assembly_candidates.append((new_node, vocab.get_slots(vocab.get_index(new_node.smiles))))
+
+            # Prepare features for the next iteration
+            mol = get_mol(new_node.smiles)
+            hs_val = sum(a.GetTotalNumHs() for a in mol.GetAtoms()) if mol else 0
+
+            current_features = model.decoder_featurizer(
+                node_type=final_next_node_id_tensor.view(1, 1),
+                hs=torch.tensor([[hs_val]], device=device),
+                layer_number=torch.tensor([[len(paths[0]) - 1]], device=device),
+                parent_pos=torch.tensor([[parent_node_idx_in_seq]], device=device)
+            )
+
+    if not all_nodes:
+        return None, []
+
+    # Determine parent-child relationships using BFS from the root
+    root_node = all_nodes[0]
+    root_node.fa = None
+    q = [root_node]
+    visited = {root_node.idx}
+    head = 0
+    while head < len(q):
+        curr = q[head]
+        head += 1
+        for neighbor in curr.neighbors:
+            if neighbor.idx not in visited:
+                neighbor.fa = curr
+                visited.add(neighbor.idx)
+                q.append(neighbor)
+
+    return root_node, all_nodes
+
+
+def main(args):
+    """
+    Main generation pipeline.
+    """
+    lg = rdkit.RDLogger.logger()
+    lg.setLevel(rdkit.RDLogger.CRITICAL)
+
+    with open(args.vocab_path, 'r') as f:
+        smiles_list = [x.strip() for x in f.readlines()]
+    vocab = Vocab(smiles_list)
+
+    vae_config = VAEConfig(latent_dim=args.latent_dim, device=args.device, num_node_type=len(vocab.vocab))
+    ddpm_config = DDPMConfig(latent_dim=args.latent_dim, timesteps=args.timesteps, device=args.device)
+
+    print("Initializing models...")
+    vae_model = JTreeformer(vae_config, vocab.vocab).to(args.device)
+    vae_model.load_state_dict(torch.load(args.vae_path, map_location=args.device))
+    vae_model.eval()
+
+    noise_predictor = NoisePredictorMLP(latent_dim=ddpm_config.latent_dim).to(args.device)
+    noise_predictor.load_state_dict(torch.load(args.noise_predictor_path, map_location=args.device))
+    diffusion_model = DiffusionModel(noise_predictor, timesteps=ddpm_config.timesteps)
+
+    # --- Generation ---
+    print(f"Generating {args.num_samples} samples using {args.inference_steps} DDIM steps...")
+    latent_vectors = diffusion_model.sample(
+        shape=(args.num_samples, ddpm_config.latent_dim),
+        device=args.device,
+        num_inference_steps=args.inference_steps,
+        eta=args.eta
+    )
+    print("Latent vectors sampled.")
+    print("Decoding latent vectors to molecules...")
+    generated_smiles = []
+    for i in tqdm(range(latent_vectors.shape[0])):
+        z = latent_vectors[i].unsqueeze(0)
+        pred_root, pred_nodes = tensor_to_mol_tree(
+            model=vae_model,
+            z=z,
+            vocab=vocab,
+            max_decode_step=args.max_decode_step
+        )
+        if pred_root:
+            final_smiles = MolTree2Mol(pred_root, pred_nodes)
+            if final_smiles:
+                generated_smiles.append(final_smiles)
+
+    print(f"Successfully generated {len(generated_smiles)} valid molecules.")
+    output_dir = os.path.dirname(args.output_path)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    with open(args.output_path, 'w') as f:
+        for smiles in generated_smiles:
+            f.write(smiles + '\n')
+    print(f"Results saved to {args.output_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--vocab_path', type=str, required=True, help="Path to vocabulary file.")
+    parser.add_argument('--vae_path', type=str, required=True, help="Path to trained JTreeformer VAE model weights.")
+    parser.add_argument('--noise_predictor_path', type=str, required=True, help="Path to trained Noise Predictor model weights.")
+    parser.add_argument('--output_path', type=str, default='results/generated_molecules.txt',
+                        help="Path to save generated SMILES.")
+
+    parser.add_argument('--num_samples', type=int, default=100, help="Number of molecules to generate.")
+    parser.add_argument('--latent_dim', type=int, default=64, help="Dimension of the latent space.")
+    parser.add_argument('--max_decode_step', type=int, default=40, help="Maximum number of nodes in the molecule tree.")
+
+    parser.add_argument('--timesteps', type=int, default=2000, help="Total timesteps in the diffusion model.")
+    parser.add_argument('--inference_steps', type=int, default=50, help="Number of steps for DDIM sampling.")
+    parser.add_argument('--eta', type=float, default=0.0, help="DDIM eta parameter. 0.0 for deterministic DDIM.")
+
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+
+    args = parser.parse_args()
+    main(args)
+
