@@ -1,0 +1,259 @@
+import os
+import json
+import argparse
+import math
+import torch
+import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
+from tqdm import tqdm
+from collections import defaultdict
+import torch.nn.functional as F
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from models.noise_predictor import NoisePredictorMLP
+from models.diffusion_model import DiffusionModel
+from data_processing.dataloader import create_ddpm_dataloader
+
+class Trainer:
+    """
+    A class to encapsulate the training and validation loop for the Diffusion Model.
+    """
+
+    def __init__(self, args):
+        self.args = args
+        self.device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+
+        # --- Data Loading ---
+        if args.train:
+            self.train_loader = create_ddpm_dataloader(args.train_path, args.batch_size, shuffle=True)
+            self.valid_loader = create_ddpm_dataloader(args.valid_path, args.batch_size, shuffle=False)
+        if args.evaluate:
+            self.test_loader = create_ddpm_dataloader(args.test_path, args.batch_size, shuffle=False)
+
+        # --- Model Initialization ---
+        self.noise_predictor = NoisePredictorMLP(latent_dim=args.latent_dim).to(self.device)
+        self.diffusion_model = DiffusionModel(self.noise_predictor, timesteps=args.timesteps)
+
+        # --- Loss Function ---
+        if args.loss_type == 'l1':
+            self.loss_fn = F.l1_loss
+        elif args.loss_type == 'l2':
+            self.loss_fn = F.mse_loss
+        else:
+            raise ValueError(f"Unsupported loss type: {args.loss_type}")
+
+        # --- Optimizer and Schedulers ---
+        self.optimizer = optim.AdamW(self.noise_predictor.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        self.lr_scheduler = self._create_lr_scheduler()
+
+        # --- State Management ---
+        self.start_epoch = 0
+        self.best_val_metric = float('inf')
+        os.makedirs(args.checkpoint_dir, exist_ok=True)
+        self.log_file_path = os.path.join(args.checkpoint_dir, 'training_log.json')
+
+        if args.resume_checkpoint or (args.evaluate and not args.train):
+            checkpoint_path = args.resume_checkpoint or args.checkpoint_path
+            if checkpoint_path and os.path.exists(checkpoint_path):
+                self._load_checkpoint(checkpoint_path)
+            elif args.evaluate:
+                raise FileNotFoundError(f"Checkpoint for evaluation not found at {checkpoint_path}")
+
+    def _create_lr_scheduler(self):
+        """Creates a learning rate scheduler with warmup and cosine decay."""
+        num_training_steps = self.args.epochs * len(self.train_loader)
+
+        def lr_lambda(current_step: int):
+            if current_step < self.args.warmup_steps:
+                return float(current_step) / float(max(1, self.args.warmup_steps))
+            progress = float(current_step - self.args.warmup_steps) / float(
+                max(1, num_training_steps - self.args.warmup_steps))
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        return LambdaLR(self.optimizer, lr_lambda)
+
+    def _compute_loss_and_metrics(self, batch, is_eval=False):
+        """
+        Computes the loss for the diffusion model. In eval mode, also computes metrics.
+        """
+        batch_size = batch.shape[0]
+        t = torch.randint(0, self.args.timesteps, (batch_size,), device=self.device).long()
+        noise = torch.randn_like(batch)
+
+        noisy_batch = self.diffusion_model.q_sample(x_start=batch, t=t, noise=noise)
+        predicted_noise = self.noise_predictor(noisy_batch, t)
+
+        loss = self.loss_fn(noise, predicted_noise)
+
+        metrics = {}
+        if is_eval:
+            metrics['l1_metric'] = F.l1_loss(noise, predicted_noise).detach()
+
+        return loss, metrics
+
+    def _save_checkpoint(self, epoch, is_best):
+        """Saves a checkpoint of the current state."""
+        state = {
+            'epoch': epoch,
+            'model_state_dict': self.noise_predictor.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'lr_scheduler_state_dict': self.lr_scheduler.state_dict(),
+            'best_val_metric': self.best_val_metric
+        }
+        torch.save(state, os.path.join(self.args.checkpoint_dir, 'checkpoint_latest.pth'))
+        if is_best:
+            torch.save(state, os.path.join(self.args.checkpoint_dir, 'checkpoint_best.pth'))
+            print(f"Saved new best checkpoint.")
+
+    def _load_checkpoint(self, path):
+        """Loads a checkpoint from the given path."""
+        print(f"Loading checkpoint from: {path}")
+        ckpt = torch.load(path, map_location=self.device)
+        self.noise_predictor.load_state_dict(ckpt['model_state_dict'])
+
+        if self.args.train:
+            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            self.lr_scheduler.load_state_dict(ckpt['lr_scheduler_state_dict'])
+            self.start_epoch = ckpt['epoch'] + 1
+            self.best_val_metric = ckpt['best_val_metric']
+            print(f"Resumed training from epoch {self.start_epoch}, best val metric: {self.best_val_metric:.4f}")
+        else:
+            print("Loaded model weights for evaluation.")
+
+    def _log_to_file(self, log_data):
+        """Appends a log entry to the JSON log file."""
+        with open(self.log_file_path, 'a') as f:
+            f.write(json.dumps(log_data) + '\n')
+
+    def _run_epoch(self, epoch, is_train=True):
+        """Runs a single training or validation epoch."""
+        self.noise_predictor.train(is_train)
+        loader = self.train_loader if is_train else self.valid_loader
+        mode_str = 'Train' if is_train else 'Valid'
+
+        agg_loss = 0.0
+        agg_metrics = defaultdict(float)
+
+        progress_bar = tqdm(loader, desc=f"Epoch {epoch} [{mode_str}]")
+
+        for i, batch in enumerate(progress_bar):
+            if is_train:
+                loss, _ = self._compute_loss_and_metrics(batch)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), 1.0)
+                self.optimizer.step()
+                self.lr_scheduler.step()
+
+                agg_loss += loss.item()
+
+                if (i + 1) % self.args.log_interval == 0:
+                    avg_loss = agg_loss / (i + 1)
+                    log_str = f"LR: {self.lr_scheduler.get_last_lr()[0]:.6f} | Loss: {avg_loss:.4f}"
+                    progress_bar.set_postfix_str(log_str)
+                    log_entry = {'epoch': epoch, 'step': i + 1, 'mode': mode_str, 'loss': avg_loss}
+                    self._log_to_file(log_entry)
+            else:
+                with torch.no_grad():
+                    loss, metrics = self._compute_loss_and_metrics(batch, is_eval=True)
+                    agg_loss += loss.item()
+                    for key, val in metrics.items():
+                        agg_metrics[key] += val.item()
+
+        final_avg_loss = agg_loss / len(loader)
+        final_avg_metrics = {key: val / len(loader) for key, val in agg_metrics.items()}
+
+        return final_avg_loss, final_avg_metrics
+
+    def train(self):
+        """The main training loop."""
+        print("Starting training...")
+        for epoch in range(self.start_epoch, self.args.epochs):
+            train_loss, _ = self._run_epoch(epoch, is_train=True)
+            val_loss, val_metrics = self._run_epoch(epoch, is_train=False)
+
+            print(f"Epoch {epoch} Train Summary: Loss: {train_loss:.4f}")
+            val_metric_str = " | ".join([f"{k}: {v:.4f}" for k, v in val_metrics.items()])
+            print(f"Epoch {epoch} Valid Summary: Loss: {val_loss:.4f} | {val_metric_str}")
+
+            # Using L1 metric for checkpointing
+            current_metric = val_metrics.get('l1_metric', val_loss)
+            is_best = current_metric < self.best_val_metric
+            if is_best:
+                self.best_val_metric = current_metric
+
+            self._save_checkpoint(epoch, is_best)
+        print("Training finished.")
+
+    def evaluate(self):
+        """Runs evaluation on the test set and saves the results."""
+        if not self.test_loader:
+            print("No test data found. Skipping evaluation.")
+            return
+
+        print("\n--- Running Evaluation on Test Set ---")
+        self.noise_predictor.eval()
+        agg_metrics = defaultdict(float)
+        progress_bar = tqdm(self.test_loader, desc="Evaluating on Test Set")
+
+        with torch.no_grad():
+            for batch in progress_bar:
+                _, metrics = self._compute_loss_and_metrics(batch)
+                for key, val in metrics.items():
+                    agg_metrics[key] += val
+
+        eval_metrics = {k: v / len(self.test_loader) for k, v in agg_metrics.items()}
+
+        print("\n--- Test Set Evaluation Results ---")
+        metric_str = " | ".join([f"{k}: {v:.4f}" for k, v in eval_metrics.items()])
+        print(f"{metric_str}")
+        print("-----------------------------------\n")
+
+        results_path = self.args.results_path
+        if not results_path:
+            results_path = os.path.join(self.args.checkpoint_dir, 'ddpm_evaluation_results.json')
+
+        print(f"Saving evaluation results to {results_path}")
+        with open(results_path, 'w') as f:
+            json.dump(eval_metrics, f, indent=4)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train Diffusion Model")
+    parser.add_argument('--train', action='store_true', help="Run the training pipeline.")
+    parser.add_argument('--evaluate', action='store_true', help="Run evaluation.")
+
+    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints_diffusion',
+                        help="Directory to save checkpoints.")
+    parser.add_argument('--resume_checkpoint', type=str, default=None, help="Checkpoint to resume training from.")
+    parser.add_argument('--checkpoint_path', type=str, default='./checkpoints_diffusion/checkpoint_best.pth',
+                        help="Checkpoint to use for evaluation.")
+
+    parser.add_argument('--latent_dim', type=int, default=64, help="Latent dimension of the data.")
+    parser.add_argument('--timesteps', type=int, default=2000, help="Number of diffusion timesteps.")
+    parser.add_argument('--loss_type', type=str, default='l1', choices=['l1', 'l2'],
+                        help="Loss function to use for training.")
+
+    parser.add_argument('--epochs', type=int, default=5000)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--warmup_steps', type=int, default=500)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
+    parser.add_argument('--log_interval', type=int, default=10)
+    parser.add_argument('--device', type=str, default='cuda', help="Device to use ('cuda' or 'cpu').")
+
+    args = parser.parse_args()
+
+    if not args.train and not args.evaluate:
+        parser.error("Must specify at least one mode: --train or --evaluate")
+
+    trainer = Trainer(args)
+
+    if args.train:
+        trainer.train()
+
+    if args.evaluate:
+        trainer.evaluate()
