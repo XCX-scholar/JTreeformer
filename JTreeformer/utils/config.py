@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 
 @dataclass
-class ModelConfig:
+class VAEConfig:
     """
-    Configuration for the JTreeformer model, dataset, and training.
+    Configuration for the JTreeformer VAE model, dataset, and training.
 
     This dataclass centralizes all hyperparameters and ablation study flags,
     making experiments reproducible and easy to configure.
@@ -66,3 +66,12 @@ class ModelConfig:
         self.decoder_alpha = (2 * self.num_layers_decoder + 1) ** (1 / 4)
         self.decoder_beta = (8 * self.num_layers_decoder + 4) ** (-1 / 4)
 
+@dataclass
+class DDPMConfig:
+    """
+    Configuration for the Diffusion Model (DDPM).
+    """
+    latent_dim: int = 64  # Should match VAEConfig.latent_dim
+    timesteps: int = 2000
+
+    device: str = "cuda"
