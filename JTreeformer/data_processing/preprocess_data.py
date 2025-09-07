@@ -12,6 +12,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from data_processing.serialization import dfs_serialize_tree
 from jtnn_utils.mol_tree import MolTree
 
+from models.jtreeformer import JTreeformer
+from dataloader import create_vae_dataloader
+from utils.config import VAEConfig
+
 STOP_TOKEN = "stop"
 
 def preprocess_and_save(
@@ -78,3 +82,64 @@ def preprocess_and_save(
             count += 1
 
     print(f"Successfully processed and saved {count} trees to {output_lmdb_path}")
+
+def generate_latent_dataset(
+        vae_checkpoint_path: str,
+        vae_data_path: str,
+        output_path: str,
+        vocab_path: str,
+        batch_size: int,
+        device: str
+):
+    """
+    Uses a trained VAE to encode a dataset into latent vectors and saves them.
+
+    This is the preprocessing step required to generate a dataset for the DDPM.
+
+    Args:
+        vae_checkpoint_path (str): Path to the trained VAE model checkpoint.
+        vae_data_path (str): Path to the LMDB dataset for the VAE.
+        output_path (str): Path to save the output tensor of latent vectors (.pt file).
+        vocab_path (str): Path to the vocabulary JSON file.
+        batch_size (int): Batch size for processing.
+        device (str): Device to run the model on ('cuda' or 'cpu').
+    """
+    if not os.path.exists(vae_checkpoint_path):
+        raise FileNotFoundError(f"VAE checkpoint not found at: {vae_checkpoint_path}")
+    if not os.path.exists(vae_data_path):
+        raise FileNotFoundError(f"VAE data not found at: {vae_data_path}")
+    if not os.path.exists(vocab_path):
+        raise FileNotFoundError(f"Vocabulary not found at: {vocab_path}")
+
+    print(f"--- Generating latent vectors from {os.path.basename(vae_data_path)} ---")
+
+    dev = torch.device(device)
+    model_config = VAEConfig()
+
+    with open(vocab_path, 'r') as f:
+        vocab = json.load(f)
+
+    model = JTreeformer(model_config, vocab).to(dev)
+    checkpoint = torch.load(vae_checkpoint_path, map_location=dev)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    print("VAE model loaded successfully.")
+
+    dataloader = create_vae_dataloader(
+        dataset_path=vae_data_path,
+        batch_size=batch_size,
+        shuffle=False
+    )
+
+    all_latents = []
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Encoding data to latent space"):
+            batch = batch.to(dev)
+            latent_dict = model.forward(batch)
+            latents = latent_dict['mean']
+            all_latents.append(latents.cpu())
+
+    final_tensor = torch.cat(all_latents, dim=0)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    torch.save(final_tensor, output_path)
+    print(f"Successfully saved {len(final_tensor)} latent vectors to {output_path}")
