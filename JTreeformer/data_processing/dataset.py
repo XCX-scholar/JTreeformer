@@ -2,7 +2,7 @@ import pickle
 import lmdb
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
-
+import torch
 
 class TreeDataset(Dataset):
     """
@@ -43,3 +43,24 @@ class TreeDataset(Dataset):
 
         data_object = pickle.loads(pickled_data)
         return data_object
+
+class LatentDataset(Dataset):
+    """
+    A PyTorch Dataset for loading latent vectors from a .pt file, for the DDPM.
+    """
+    def __init__(self, latent_path: str):
+        """
+        Args:
+            latent_path (str): Path to the .pt file containing the tensor of latent vectors.
+        """
+        print(f"Loading latent vectors from: {latent_path}")
+        self.latents = torch.load(latent_path)
+
+    def __len__(self) -> int:
+        return len(self.latents)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        """
+        Retrieves a latent vector.
+        """
+        return self.latents[idx]
