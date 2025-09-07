@@ -15,7 +15,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.config import ModelConfig
 from models.jtreeformer import JTreeformer
-from data_processing.dataloader import create_dataloader
+from data_processing.dataloader import create_vae_dataloader
 
 class KLCycleScheduler:
     """
@@ -64,10 +64,10 @@ class Trainer:
 
         # --- Data Loading ---
         if args.train:
-            self.train_loader = create_dataloader(args.train_path, args.batch_size, shuffle=True)
-            self.valid_loader = create_dataloader(args.valid_path, args.batch_size, shuffle=False)
+            self.train_loader = create_vae_dataloader(args.train_path, args.batch_size, shuffle=True)
+            self.valid_loader = create_vae_dataloader(args.valid_path, args.batch_size, shuffle=False)
         if args.evaluate:
-            self.test_loader = create_dataloader(args.test_path, args.batch_size, shuffle=False)
+            self.test_loader = create_vae_dataloader(args.test_path, args.batch_size, shuffle=False)
 
         # --- Model, Vocab, and Scaler ---
         self.vocab = self._load_vocab(args.vocab_path)
@@ -228,6 +228,20 @@ class Trainer:
             self._save_checkpoint(epoch, is_best)
         print("Training finished.")
 
+    def evaluate(self):
+        """Runs evaluation on the test set and saves the results."""
+        print("\n--- Running Evaluation on Test Set ---")
+        test_losses = self._run_epoch(epoch=self.start_epoch, is_train=False, use_test_set=True)
+        print("\n--- Test Set Evaluation Results ---")
+        print(" | ".join([f"{k}: {v:.4f}" for k, v in test_losses.items()]))
+        print("-----------------------------------\n")
+        results_path = self.args.results_path
+        if not results_path:
+            results_path = os.path.join(self.args.checkpoint_dir, 'vae_evaluation_results.json')
+
+        print(f"Saving evaluation results to {results_path}")
+        with open(results_path, 'w') as f:
+            json.dump(test_losses, f, indent=4)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train or Evaluate JTreeformer VAE")
@@ -276,8 +290,4 @@ if __name__ == "__main__":
         trainer.train()
 
     if args.evaluate:
-        print("\n--- Running Evaluation on Test Set ---")
-        test_losses = trainer._run_epoch(epoch=trainer.start_epoch, is_train=False, use_test_set=True)
-        print("\n--- Test Set Evaluation Results ---")
-        print(" | ".join([f"{k}: {v:.4f}" for k, v in test_losses.items()]))
-        print("-----------------------------------\n")
+        trainer.evaluate()
