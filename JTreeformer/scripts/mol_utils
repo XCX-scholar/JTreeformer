@@ -1,0 +1,183 @@
+import rdkit.Chem as Chem
+import copy
+from typing import Optional
+from jtnn_utils.mol_tree import MolTreeNode
+from jtnn_utils.chemutils import (
+    set_atommap,
+    enum_assemble,
+    attach_mols,
+    copy_edit_mol,
+    ring_bond_equal
+)
+
+# --- Helper functions for chemical validation ---
+def bond_inter(smiles1, smiles2):
+    """Check if two molecular fragments share a common ring bond."""
+    ctr_mol = Chem.MolFromSmiles(smiles1)
+    nei_mol = Chem.MolFromSmiles(smiles2)
+    for b1 in ctr_mol.GetBonds():
+        for b2 in nei_mol.GetBonds():
+            if ring_bond_equal(b1, b2) or ring_bond_equal(b1, b2, reverse=True):
+                return True
+    return False
+
+def have_charge(fa_node, chi_node):
+    """Check if adding a child node would violate valence rules."""
+    cap = fa_node.hs
+    for nei in fa_node.neighbors + [chi_node]:
+        if len(nei.smiles) == 1:
+            continue
+        if len(nei.smiles) == 2:
+            cap -= 1
+        elif len(nei.smiles) == 3:
+            if nei.smiles[1] == '=':
+                cap -= 2
+            if nei.smiles[1] == '#':
+                cap -= 3
+        elif len(nei.smiles) > 3:
+            if '__contains__' in dir(nei.smiles) and nei.smiles.__contains__('='):
+                cap -= 3
+            elif '__contains__' in dir(nei.smiles) and nei.smiles.__contains__('#'):
+                cap -= 4
+            else:
+                cap -= 2
+    return cap >= 0
+
+def have_slots(fa_slots, ch_slots):
+    """Check if two fragments have compatible attachment points (slots)."""
+    if len(fa_slots) > 2 and len(ch_slots) > 2:
+        return True
+    matches = []
+    for i, s1 in enumerate(fa_slots):
+        a1, c1, h1 = s1
+        for j, s2 in enumerate(ch_slots):
+            a2, c2, h2 = s2
+            if a1 == a2 and c1 == c2 and (a1 != "C" or h1 + h2 >= 4):
+                matches.append((i, j))
+
+    if not matches:
+        return False
+
+    fa_match, ch_match = list(zip(*matches))
+    if len(set(fa_match)) == 1 and 1 < len(fa_slots) <= 2:
+        fa_slots.pop(fa_match[0])
+    if len(set(ch_match)) == 1 and 1 < len(ch_slots) <= 2:
+        ch_slots.pop(ch_match[0])
+
+    return True
+
+
+def can_assemble(node_x, node_y):
+    """Check if two nodes can be assembled into a chemically valid structure."""
+    node_x.nid = 1
+    node_x.is_leaf = False
+    set_atommap(node_x.mol, node_x.nid)
+
+    neis = node_x.neighbors + [node_y]
+    for i, nei in enumerate(neis):
+        nei.nid = i + 2
+        nei.is_leaf = (len(nei.neighbors) <= 1)
+        if nei.is_leaf:
+            set_atommap(nei.mol, 0)
+        else:
+            set_atommap(nei.mol, nei.nid)
+
+    neighbors = [nei for nei in neis if nei.mol.GetNumAtoms() > 1]
+    neighbors = sorted(neighbors, key=lambda x: x.mol.GetNumAtoms(), reverse=True)
+    singletons = [nei for nei in neis if nei.mol.GetNumAtoms() == 1]
+    neighbors = singletons + neighbors
+    cands, aroma_scores = enum_assemble(node_x, neighbors, cs=True, bl=True)
+    return len(cands) > 0
+
+# --- Molecule Assembly Logic ---
+def dfs_assemble(cur_mol, global_amap, pred_amap, cur_node, fa_node):
+    """
+    Recursively assembles a molecule from a tree using Depth-First Search.
+    This function explores possible assembly combinations and backtracks on failure.
+    """
+    fa_nid = fa_node.nid if fa_node is not None else -1
+    prev_nodes = [fa_node] if fa_node is not None else []
+
+    children = [nei for nei in cur_node.neighbors if nei.nid != fa_nid]
+    neighbors = [nei for nei in children if nei.mol.GetNumAtoms() > 1]
+    neighbors = sorted(neighbors, key=lambda x: x.mol.GetNumAtoms(), reverse=True)
+    singletons = [nei for nei in children if nei.mol.GetNumAtoms() == 1]
+    neighbors = singletons + neighbors
+
+    cur_amap = [(fa_nid, a2, a1) for nid, a1, a2 in pred_amap if nid == cur_node.nid]
+    cands, aroma_scores = enum_assemble(cur_node, neighbors, prev_nodes, cur_amap, cs=True, bl=True)
+    if not cands:
+        return None
+    cand_smiles, cand_amap = zip(*cands)
+    sorted_indices = sorted(range(len(cands)), key=lambda k: aroma_scores[k], reverse=True)
+
+    for i in sorted_indices:
+        current_assembly_mol = Chem.RWMol(cur_mol)
+        pred_amap_i = cand_amap[i]
+
+        new_global_amap = copy.deepcopy(global_amap)
+        for nei_id, ctr_atom, nei_atom in pred_amap_i:
+            if nei_id == fa_nid: continue
+            new_global_amap[nei_id][nei_atom] = new_global_amap[cur_node.nid][ctr_atom]
+
+        current_assembly_mol = attach_mols(current_assembly_mol, children, [], new_global_amap)
+
+        mol_from_smiles = Chem.MolFromSmiles(Chem.MolToSmiles(current_assembly_mol.GetMol()))
+        if mol_from_smiles is None: continue
+
+        has_error = False
+        for child_node in children:
+            if child_node.is_leaf: continue
+
+            assembled_child, _ = dfs_assemble(current_assembly_mol, new_global_amap, pred_amap_i, child_node, cur_node)
+            if assembled_child is None:
+                has_error = True
+                break
+            current_assembly_mol = assembled_child
+
+        if not has_error:
+            return current_assembly_mol, True
+
+    return None, False
+
+def MolTree2Mol(pred_root: MolTreeNode, pred_nodes: list) -> Optional[str]:
+    """
+    Converts a predicted molecule tree back into a SMILES string.
+    Args:
+        pred_root (MolTreeNode): The root of the molecule tree.
+        pred_nodes (list): A list of all nodes in the tree.
+
+    Returns:
+        str: The final SMILES string, or None if assembly fails.
+    """
+    if not pred_nodes:
+        return None
+    if len(pred_nodes) == 1:
+        return pred_root.smiles
+
+    # Step 1: Assign unique IDs and mark leaf nodes
+    for i, node in enumerate(pred_nodes):
+        node.nid = i + 1
+        node.is_leaf = (len(node.neighbors) == 1)
+        if len(node.neighbors) > 1:
+            set_atommap(node.mol, node.nid)
+
+    # Step 2: Initialize the main molecule with the root fragment
+    cur_mol = copy_edit_mol(pred_root.mol)
+    global_amap = [{}] * (len(pred_nodes) + 1)
+    global_amap[1] = {atom.GetIdx(): atom.GetIdx() for atom in cur_mol.GetAtoms()}
+
+    # Step 3: Recursively assemble the molecule starting from the root
+    cur_mol, success = dfs_assemble(cur_mol, global_amap, [], pred_root, None)
+
+    if not success or cur_mol is None:
+        return None
+
+    # Step 4: Finalize the molecule
+    final_mol = cur_mol.GetMol()
+    set_atommap(final_mol)  # Clear atom map numbers
+    final_smiles = Chem.MolToSmiles(final_mol)
+
+    # Step 5: Sanitize and return
+    sane_mol = Chem.MolFromSmiles(final_smiles)
+    return Chem.MolToSmiles(sane_mol) if sane_mol else None
