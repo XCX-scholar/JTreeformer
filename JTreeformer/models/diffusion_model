@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from noise_predictor import NoisePredictorMLP
+from models.noise_predictor import NoisePredictorMLP
 def get_noise_schedule(schedule_name: str, timesteps: int, **kwargs):
     """
     Generates a variance schedule for the diffusion process.
