@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
-from utils.config import ModelConfig
+from utils.config import VAEConfig
 from models.common_layers import MultiHeadAttention, DAGCNConv, WeightInitializer
 
 class DecoderLayer(nn.Module):
@@ -12,7 +12,7 @@ class DecoderLayer(nn.Module):
     This layer is similar to the EncoderLayer but uses causal self-attention
     and a Directed Acyclic Graph Convolution (DAGCN) for its graph-based branch.
     """
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: VAEConfig):
         super().__init__()
         self.config = config
         self.alpha = config.decoder_alpha
@@ -92,7 +92,7 @@ class Decoder(nn.Module):
     The complete JTreeformer Decoder module.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: VAEConfig):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList([DecoderLayer(config) for _ in range(config.num_layers_decoder)])
@@ -137,11 +137,11 @@ class Decoder(nn.Module):
         """
         x = self.final_norm(x)  # Pre-LN
 
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             x = layer(
                 x=x,
                 edge_index=edge_index,
-                attn_bias=attn_bias,
+                attn_bias=attn_bias if not use_kv_cache else attn_bias[:, :, -1:, :],
                 padding_mask=padding_mask,
                 use_kv_cache=use_kv_cache
             )
