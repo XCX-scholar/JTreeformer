@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.config import ModelConfig
+from utils.config import VAEConfig
 from models.jtreeformer import JTreeformer
 from data_processing.dataloader import create_vae_dataloader
 
@@ -56,7 +56,7 @@ class Trainer:
     A class to encapsulate the training and validation loop for the JTreeformer model.
     """
 
-    def __init__(self, config: ModelConfig, args):
+    def __init__(self, config: VAEConfig, args):
         self.config = config
         self.args = args
         self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
@@ -283,7 +283,7 @@ if __name__ == "__main__":
     if args.predict_properties and not args.scaler_path:
         parser.error("--scaler_path is required when --predict_properties is set.")
 
-    model_config = ModelConfig()
+    model_config = VAEConfig()
     trainer = Trainer(model_config, args)
 
     if args.train:
