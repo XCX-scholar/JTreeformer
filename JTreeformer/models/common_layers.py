@@ -5,7 +5,7 @@ from typing import Optional
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.utils import degree
 
-from utils.config import ModelConfig
+from utils.config import VAEConfig
 
 
 # --- Helper Functions & Classes ---
@@ -65,7 +65,7 @@ class NodeFeaturizer(nn.Module):
     Constructs node features by summing various configurable embeddings.
     """
 
-    def __init__(self, config: ModelConfig, is_decoder: bool = False):
+    def __init__(self, config: VAEConfig, is_decoder: bool = False):
         super().__init__()
         self.config = config
         self.is_decoder = is_decoder
@@ -182,6 +182,7 @@ class MultiHeadAttention(nn.Module):
                 # We are in generation mode, `query` is the current token
                 # `key` and `value` are also for the current token
                 # Concatenate new K,V with cached K,V
+                # But in current logic of JTreeformer, it require more sophisticated implementation. I will comlete it later.
                 k = torch.cat([self.k_cache, self.k_proj(key)], dim=1)
                 v = torch.cat([self.v_cache, self.v_proj(value)], dim=1)
             else:
