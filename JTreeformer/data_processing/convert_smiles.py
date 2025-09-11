@@ -26,8 +26,17 @@ def convert_to_mol_tree(smi: str) -> Tuple[Optional[MolTree], Optional[set]]:
             clique_set.add(node.smiles)
         return (mol_tree,clique_set)
     except Exception as e:
-        print(f"Failed to process SMILES '{smi}': {e}", file=sys.stderr)
-        return (None, None)
+        try:
+            smi, _ = smi.split(',')
+            mol_tree = MolTree(smi)
+            del mol_tree.mol
+            for node in mol_tree.nodes:
+                del node.mol
+                clique_set.add(node.smiles)
+            return (mol_tree, clique_set)
+        except Exception as e:
+            print(f"Failed to process SMILES '{smi}': {e}", file=sys.stderr)
+            return (None, None)
 
 def main():
     """
