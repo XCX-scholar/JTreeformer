@@ -132,28 +132,45 @@ class JTreeformer(nn.Module):
         current_features = self.latent_to_decoder_proj(z).unsqueeze(1)
 
         gen_node_indices = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
-        paths = [[0] for _ in range(batch_size)]
+        paths = [[-1] for _ in range(batch_size)]
 
-        adj_matrices = torch.zeros(batch_size, max_len + 1, max_len + 1, device=device)
+        adj_matrices = torch.zeros(batch_size, max_len, max_len, device=device)
         finished_sequences = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         with torch.no_grad():
             for step in range(max_len):
-                current_seq_len = step + 1
-                attn_bias = self.decoder_attn_bias(adj_matrices[:, :current_seq_len, :current_seq_len])
+                attn_bias = self.decoder_attn_bias(adj_matrices[:, :step, :step])
 
                 z_broadcasted = z.unsqueeze(1).expand(-1, current_features.size(1), -1)
                 fused_features = self.latent_fusion_proj(
                     torch.cat([current_features, z_broadcasted], dim=-1)
                 )
 
+                padding_mask = torch.full((batch_size,current_features.size(1)), 0, dtype=torch.bool, device=device)
+                edge_index_list = []
+                current_seq_len = fused_features.size(1)
+                num_nodes_per_graph = current_seq_len - 1
+                if num_nodes_per_graph > 0:
+                    node_offset = 0
+                    for i in range(batch_size):
+                        adj_i = adj_matrices[i, :current_seq_len, :current_seq_len]
+                        edge_index_i = adj_i.nonzero(as_tuple=False).t()
+                        if edge_index_i.numel() > 0:
+                            edge_index_list.append(edge_index_i + node_offset)
+                        node_offset += num_nodes_per_graph
+
+                if len(edge_index_list) > 0:
+                    edge_index = torch.cat(edge_index_list, dim=1)
+                else:
+                    edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
+
                 node_logits, relation_logits = self.decoder(
-                    x=fused_features, edge_index=None,
-                    attn_bias=attn_bias, padding_mask=None, use_kv_cache=True
+                    x=fused_features, edge_index=edge_index,
+                    attn_bias=attn_bias, padding_mask=padding_mask, use_kv_cache=True
                 )
 
                 node_logits[:, -1, 0] = -float('inf')
-                next_node_id = node_logits[:, -1, :].argmax(dim=-1)
+                next_node_id = node_logits[:, -1, 1:].argmax(dim=-1)
 
                 next_node_id = torch.where(finished_sequences, stop_token_id, next_node_id)
                 gen_node_indices[:, step] = next_node_id
@@ -181,14 +198,15 @@ class JTreeformer(nn.Module):
                         continue
 
                     r = predicted_relation[i].item()
-                    parent_path_idx = len(paths[i]) - 1 - r
-                    parent_node_idx = paths[i][parent_path_idx]
+                    parent_path_pos = len(paths[i]) - r - 1
+                    parent_node_idx = paths[i][parent_path_pos]
 
-                    new_node_idx = step + 1
-                    adj_matrices[i, parent_node_idx, new_node_idx] = 1
-                    adj_matrices[i, new_node_idx, parent_node_idx] = 1
+                    new_node_idx = step
+                    if step > 0:
+                        adj_matrices[i, parent_node_idx, new_node_idx] = 1
+                        adj_matrices[i, new_node_idx, parent_node_idx] = 1
 
-                    paths[i] = paths[i][:parent_path_idx + 1] + [new_node_idx]
+                    paths[i] = paths[i][:parent_path_pos + 1] + [new_node_idx]
 
                     node_smiles = self.inv_vocab.get(next_node_id[i].item(), "")
                     mol = get_mol(node_smiles)
@@ -200,8 +218,53 @@ class JTreeformer(nn.Module):
                         layer_number=torch.tensor([[len(paths[i]) - 1]], device=device),
                         parent_pos=torch.tensor([[parent_node_idx]], device=device)
                     )
-                    next_node_features_list.append(next_node_features)
+                    next_node_features_list.append(next_node_features[:, 1:])
 
                 current_features = torch.cat(next_node_features_list, dim=0)
 
         return gen_node_indices
+
+
+if __name__ == '__main__':
+    config = VAEConfig()
+    vocab = {
+        "<pad>": 0, "C": 1, "N": 2, "O": 3, "c1ccccc1": 4,
+        "(": 5, ")": 6, "=": 7, "#": 8, "[C@@H]": 9,
+        "<stop>": 10
+    }
+    config.vocab_size = len(vocab)
+    inv_vocab = {v: k for k, v in vocab.items()}
+
+    print("Instantiating JTreeformer model...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = JTreeformer(config, vocab).to(device)
+    print("Model instantiated successfully.")
+
+    batch_size = 2
+    max_decode_len = 15
+    stop_token_id = vocab["<stop>"]
+
+    z = torch.randn(batch_size, config.latent_dim).to(device)
+
+    print(f"\nTesting decode method with batch_size={batch_size} and max_len={max_decode_len}...")
+
+    model.eval()
+    with torch.no_grad():
+        decoded_indices = model.decode(z, max_len=max_decode_len, stop_token_id=stop_token_id)
+
+    print("Decode method finished.")
+
+    print("\n--- Decoded Results ---")
+    for i in range(batch_size):
+        sequence_indices = decoded_indices[i].tolist()
+        print(sequence_indices)
+
+        if stop_token_id in sequence_indices:
+            stop_idx = sequence_indices.index(stop_token_id)
+            sequence_indices = sequence_indices[:stop_idx]
+
+        smiles_sequence = [inv_vocab.get(idx, "<unk>") for idx in sequence_indices]
+
+        print(f"Sample {i + 1}: {' '.join(smiles_sequence)}")
+
+    print("\nTest script finished successfully.")
