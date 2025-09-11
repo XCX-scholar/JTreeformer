@@ -19,8 +19,8 @@ class Vocab(object):
         self.vmap = {x: i+1 for i, x in enumerate(self.vocab)}
         self.vmap['padding']=0
         self.vmap['stop']=len(self.vmap)
-        print(self.vmap['stop'])
-        self.slots = [[(0,0,0)]]+[get_slots(smiles) for smiles in self.vocab]
+        print("id of <stop>:", self.vmap['stop'])
+        self.slots = [[(0,0,0)]]+[get_slots(smiles) for smiles in self.vocab if smiles != 'stop']
         self.vocab = ["padding"]+smiles_list
         Vocab.benzynes = [s for s in smiles_list if s.count('=') >= 2 and Chem.MolFromSmiles(s).GetNumAtoms() == 6] + [
             'C1=CCNCC1']
