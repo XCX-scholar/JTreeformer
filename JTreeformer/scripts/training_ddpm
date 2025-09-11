@@ -33,7 +33,8 @@ class Trainer:
             self.test_loader = create_ddpm_dataloader(args.test_path, args.batch_size, shuffle=False)
 
         # --- Model Initialization ---
-        self.noise_predictor = NoisePredictorMLP(latent_dim=args.latent_dim).to(self.device)
+        self.noise_predictor = NoisePredictorMLP(latent_dim=args.latent_dim, time_embed_dim=args.time_embed_dim,
+                                                 hidden_dim=args.hidden_dim, num_layers=args.num_layers).to(self.device)
         self.diffusion_model = DiffusionModel(self.noise_predictor, timesteps=args.timesteps)
 
         # --- Loss Function ---
@@ -63,16 +64,17 @@ class Trainer:
 
     def _create_lr_scheduler(self):
         """Creates a learning rate scheduler with warmup and cosine decay."""
-        num_training_steps = self.args.epochs * len(self.train_loader)
+        if self.args.train:
+            num_training_steps = self.args.epochs * len(self.train_loader)
 
-        def lr_lambda(current_step: int):
-            if current_step < self.args.warmup_steps:
-                return float(current_step) / float(max(1, self.args.warmup_steps))
-            progress = float(current_step - self.args.warmup_steps) / float(
-                max(1, num_training_steps - self.args.warmup_steps))
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+            def lr_lambda(current_step: int):
+                if current_step < self.args.warmup_steps:
+                    return float(current_step) / float(max(1, self.args.warmup_steps))
+                progress = float(current_step - self.args.warmup_steps) / float(
+                    max(1, num_training_steps - self.args.warmup_steps))
+                return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
-        return LambdaLR(self.optimizer, lr_lambda)
+            return LambdaLR(self.optimizer, lr_lambda)
 
     def _compute_loss_and_metrics(self, batch, is_eval=False):
         """
@@ -150,7 +152,7 @@ class Trainer:
 
                 agg_loss += loss.item()
 
-                if (i + 1) % self.args.log_interval == 0:
+                if (i + 1) % self.args.log_interval == 0 and is_train:
                     avg_loss = agg_loss / (i + 1)
                     log_str = f"LR: {self.lr_scheduler.get_last_lr()[0]:.6f} | Loss: {avg_loss:.4f}"
                     progress_bar.set_postfix_str(log_str)
@@ -201,11 +203,11 @@ class Trainer:
 
         with torch.no_grad():
             for batch in progress_bar:
-                _, metrics = self._compute_loss_and_metrics(batch)
+                _, metrics = self._compute_loss_and_metrics(batch, is_eval=True)
                 for key, val in metrics.items():
                     agg_metrics[key] += val
 
-        eval_metrics = {k: v / len(self.test_loader) for k, v in agg_metrics.items()}
+        eval_metrics = {k: v.item() / len(self.test_loader) for k, v in agg_metrics.items()}
 
         print("\n--- Test Set Evaluation Results ---")
         metric_str = " | ".join([f"{k}: {v:.4f}" for k, v in eval_metrics.items()])
