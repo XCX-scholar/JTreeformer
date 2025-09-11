@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import torch
 
 @dataclass
 class VAEConfig:
@@ -52,7 +53,7 @@ class VAEConfig:
     decoder_beta: float = field(init=False)
 
     # --- Device ---
-    device: str = "cuda:0"
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     def __post_init__(self):
         """
@@ -72,6 +73,9 @@ class DDPMConfig:
     Configuration for the Diffusion Model (DDPM).
     """
     latent_dim: int = 64  # Should match VAEConfig.latent_dim
-    timesteps: int = 2000
+    time_embed_dim: int = 32
+    hidden_dim: int = 32
+    num_layers:int = 2
+    timesteps: int = 100
 
-    device: str = "cuda"
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
