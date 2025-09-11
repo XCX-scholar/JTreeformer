@@ -13,7 +13,7 @@ from data_processing.serialization import dfs_serialize_tree
 from jtnn_utils.mol_tree import MolTree
 
 from models.jtreeformer import JTreeformer
-from dataloader import create_vae_dataloader
+from data_processing.dataloader import create_vae_dataloader
 from utils.config import VAEConfig
 
 STOP_TOKEN = "stop"
