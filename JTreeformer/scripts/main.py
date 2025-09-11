@@ -9,9 +9,8 @@ from tqdm import tqdm
 from multiprocessing import Pool
 from typing import List
 from sklearn.model_selection import train_test_split
-
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from jtnn_utils.mol_tree import MolTree
 from data_processing.convert_smiles import convert_to_mol_tree
 from data_processing.preprocess_data import preprocess_and_save, generate_latent_dataset
@@ -29,25 +28,26 @@ def set_seed(seed: int):
 
 
 def compute_and_save_scaler(mol_trees_path: str, scaler_path: str):
-    print(f"Loading MolTrees from {mol_trees_path} to compute property scaler...")
-    with open(mol_trees_path, 'rb') as f:
-        mol_trees: List[MolTree] = pickle.load(f)
-    properties = np.array([[t.w, t.logp, t.tpsa] for t in mol_trees])
-    scaler_data = {'mean': properties.mean(axis=0).tolist(), 'std': properties.std(axis=0).tolist()}
-    with open(scaler_path, 'w') as f:
-        json.dump(scaler_data, f, indent=2)
-    print(f"Property scaler saved to {scaler_path}")
+    if not os.path.exists(scaler_path):
+        print(f"Loading MolTrees from {mol_trees_path} to compute property scaler...")
+        with open(mol_trees_path, 'rb') as f:
+            mol_trees: List[MolTree] = pickle.load(f)
+        properties = np.array([[t.w, t.logp, t.tpsa] for t in mol_trees])
+        scaler_data = {'mean': properties.mean(axis=0).tolist(), 'std': properties.std(axis=0).tolist()}
+        with open(scaler_path, 'w') as f:
+            json.dump(scaler_data, f, indent=2)
+        print(f"Property scaler saved to {scaler_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="JTreeformer Full Pipeline")
 
     general_group = parser.add_argument_group('General')
-    general_group.add_argument('--train_vae', action='store_true', help="Run the VAE training pipeline.")
-    general_group.add_argument('--evaluate_vae', action='store_true', help="Run VAE evaluation.")
-    general_group.add_argument('--train_ddpm', action='store_true', help="Run the DDPM training pipeline.")
-    general_group.add_argument('--evaluate_ddpm', action='store_true', help="Run DDPM evaluation.")
-    general_group.add_argument('--data_dir', type=str, default='../data/processed/')
+    general_group.add_argument('--train_vae', default=True, type=bool, help="Run the VAE training pipeline.")
+    general_group.add_argument('--evaluate_vae', default=True, type=bool, help="Run VAE evaluation.")
+    general_group.add_argument('--train_ddpm', default=True, type=bool, help="Run the DDPM training pipeline.")
+    general_group.add_argument('--evaluate_ddpm', default=True, type=bool, help="Run DDPM evaluation.")
+    general_group.add_argument('--data_dir', type=str, default='./data')
     general_group.add_argument('--dataset_name', default='tool_dataset', type=str, help="Name of SMILES dataset file.")
     general_group.add_argument('--dataset_suffix', default='smi', type=str, help="Suffix of dataset file.")
     general_group.add_argument('--force_preprocess', action='store_true', help="Force regeneration of all preprocessed data.")
@@ -55,14 +55,16 @@ def main():
     general_group.add_argument('--test_size', type=float, default=0.1)
     general_group.add_argument('--valid_size', type=float, default=0.1)
     general_group.add_argument('--predict_properties', type=bool, default=True, help="Enable property prediction in VAE.")
-    general_group.add_argument('--device', type=str, default='cuda', help="Device to use ('cuda' or 'cpu').")
+    general_group.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help="Device to use ('cuda' or 'cpu').")
 
     # --- VAE specific arguments ---
     vae_group = parser.add_argument_group('VAE Hyperparameters')
     vae_group.add_argument('--vae_checkpoint_dir', type=str, default='../checkpoints_vae')
     vae_group.add_argument('--vae_checkpoint_path', type=str, default=None, help="Specific VAE checkpoint to load for evaluation or DDPM data generation.")
+    vae_group.add_argument('--vae_results_path', type=str, default=None,
+                            help="Path to save VAE evaluation results JSON.")
     vae_group.add_argument('--vae_resume_checkpoint', action='store_true', default=False)
-    vae_group.add_argument('--vae_epochs', type=int, default=4)
+    vae_group.add_argument('--vae_epochs', type=int, default=1)
     vae_group.add_argument('--vae_batch_size', type=int, default=4)
     vae_group.add_argument('--vae_lr', type=float, default=1e-4)
     vae_group.add_argument('--vae_warmup_steps', type=int, default=4000)
@@ -77,7 +79,7 @@ def main():
     ddpm_group.add_argument('--ddpm_checkpoint_path', type=str, default=None, help="Specific DDPM checkpoint to load for evaluation.")
     ddpm_group.add_argument('--ddpm_results_path', type=str, default=None, help="Path to save DDPM evaluation results JSON.")
     ddpm_group.add_argument('--ddpm_resume_checkpoint', type=str, default=None, help="Path to DDPM checkpoint to resume training from.")
-    ddpm_group.add_argument('--ddpm_epochs', type=int, default=5000)
+    ddpm_group.add_argument('--ddpm_epochs', type=int, default=1)
     ddpm_group.add_argument('--ddpm_batch_size', type=int, default=128)
     ddpm_group.add_argument('--ddpm_lr', type=float, default=1e-4)
     ddpm_group.add_argument('--ddpm_warmup_steps', type=int, default=500)
@@ -87,7 +89,9 @@ def main():
 
     args = parser.parse_args()
     set_seed(args.seed)
-    os.makedirs(args.data_dir, exist_ok=True)
+    processed_data_dir = os.path.join(args.data_dir, 'processed')
+    args.processed_data_dir = processed_data_dir
+    os.makedirs(args.processed_data_dir, exist_ok=True)
 
     # --- Data Preparation Pipeline ---
     dataset_smiles = os.path.join(args.data_dir, f'{args.dataset_name}.{args.dataset_suffix}')
@@ -98,10 +102,10 @@ def main():
     args.vocab_path = vocab_path
 
     smiles_sources = {'all': dataset_smiles, 'train': train_smiles, 'valid': valid_smiles, 'test': test_smiles}
-    mol_tree_paths = {split: os.path.join(args.data_dir, f'{split}_mol_trees.pkl') for split in smiles_sources}
-    lmdb_paths = {split: os.path.join(args.data_dir, f'{split}.lmdb') for split in smiles_sources}
-    split_indices_path = os.path.join(args.data_dir, f'{args.dataset_name}_split_indices.json')
-    scaler_path = os.path.join(args.data_dir, f'{args.dataset_name}_scaler.json')
+    mol_tree_paths = {split: os.path.abspath(os.path.join(args.processed_data_dir, f'{split}_mol_trees.pkl')) for split in smiles_sources}
+    lmdb_paths = {split: os.path.abspath(os.path.join(args.processed_data_dir, f'{split}.lmdb')) for split in smiles_sources}
+    split_indices_path = os.path.abspath(os.path.join(args.processed_data_dir, f'{args.dataset_name}_split_indices.json'))
+    scaler_path = os.path.abspath(os.path.join(args.data_dir, f'{args.dataset_name}_scaler.json'))
 
     # --- STEP 1: Ensure MolTree files exist for specified splits ---
     all_clique_sets = []
@@ -181,10 +185,13 @@ def main():
         vae_args_ns = argparse.Namespace(
             train_path=lmdb_paths['train'], valid_path=lmdb_paths['valid'], test_path=lmdb_paths['test'],
             scaler_path=scaler_path, vocab_path=vocab_path, checkpoint_dir=args.vae_checkpoint_dir,
+            checkpoint_path=args.vae_checkpoint_path or os.path.join(args.vae_checkpoint_dir, 'checkpoint_best.pth'),
             resume_checkpoint=args.vae_resume_checkpoint, epochs=args.vae_epochs, batch_size=args.vae_batch_size,
             lr=args.vae_lr, warmup_steps=args.vae_warmup_steps, weight_decay=args.vae_weight_decay,
             clip_norm=args.vae_clip_norm, predict_properties=args.predict_properties,
-            kl_cycle_len=args.vae_kl_cycle_len, log_interval=args.vae_log_interval
+            kl_cycle_len=args.vae_kl_cycle_len, log_interval=args.vae_log_interval,
+            train=args.train_vae, evaluate=args.evaluate_vae,
+            results_path=args.vae_results_path
         )
         vae_trainer = VAE_Trainer(vae_config, vae_args_ns)
 
@@ -197,48 +204,49 @@ def main():
             vae_trainer._load_checkpoint(ckpt)
             vae_trainer.evaluate()
 
-        # --- STEP 4.2: DDPM Training / Evaluation ---
-        ddpm_latent_paths = {s: os.path.join(args.data_dir, f'{s}_latents.pt') for s in ['train', 'valid', 'test']}
+    # --- STEP 4.2: DDPM Training / Evaluation ---
+    ddpm_latent_paths = {s: os.path.join(args.processed_data_dir, f'{s}_latents.pt') for s in ['train', 'valid', 'test']}
+
+    if args.train_ddpm:
+        print("\n--- Preparing Latent Dataset for DDPM ---")
+        for split in ['train', 'valid', 'test']:
+            if not os.path.exists(ddpm_latent_paths[split]) or args.force_preprocess:
+                print(f"Latent data for '{split}' not found. Generating...")
+                vae_ckpt = args.vae_checkpoint_path or os.path.join(args.vae_checkpoint_dir, 'checkpoint_best.pth')
+                if not os.path.exists(vae_ckpt):
+                    raise FileNotFoundError(f"Cannot generate latents. VAE checkpoint not found: {vae_ckpt}")
+                if not os.path.exists(lmdb_paths[split]):
+                    raise FileNotFoundError(f"Cannot generate latents. VAE data not found: {lmdb_paths[split]}")
+
+                generate_latent_dataset(
+                    vae_checkpoint_path=vae_ckpt, vae_data_path=lmdb_paths[split],
+                    output_path=ddpm_latent_paths[split], vocab_path=vocab_path,
+                    batch_size=args.vae_batch_size, device=args.device
+                )
+
+    if args.train_ddpm or args.evaluate_ddpm:
+        print("\n--- DDPM Pipeline ---")
+        ddpm_config = DDPMConfig()
+        ddpm_args_ns = argparse.Namespace(
+            train_path=ddpm_latent_paths['train'], valid_path=ddpm_latent_paths['valid'], test_path=ddpm_latent_paths['test'],
+            checkpoint_dir=args.ddpm_checkpoint_dir,
+            resume_checkpoint=args.ddpm_resume_checkpoint,
+            checkpoint_path=args.ddpm_checkpoint_path or os.path.join(args.ddpm_checkpoint_dir,'checkpoint_best.pth'),
+            latent_dim=ddpm_config.latent_dim, timesteps=ddpm_config.timesteps,time_embed_dim=ddpm_config.time_embed_dim,
+            hidden_dim=ddpm_config.hidden_dim, num_layers=ddpm_config.num_layers,
+            loss_type=args.ddpm_loss_type, epochs=args.ddpm_epochs, batch_size=args.ddpm_batch_size,
+            lr=args.ddpm_lr, warmup_steps=args.ddpm_warmup_steps, weight_decay=args.ddpm_weight_decay,
+            log_interval=args.ddpm_log_interval, device=args.device,
+            train=args.train_ddpm, evaluate=args.evaluate_ddpm, results_path=args.ddpm_results_path
+        )
+
+        ddpm_trainer = DDPM_Trainer(ddpm_args_ns)
 
         if args.train_ddpm:
-            print("\n--- Preparing Latent Dataset for DDPM ---")
-            for split in ['train', 'valid', 'test']:
-                if not os.path.exists(ddpm_latent_paths[split]) or args.force_preprocess:
-                    print(f"Latent data for '{split}' not found. Generating...")
-                    vae_ckpt = args.vae_checkpoint_path or os.path.join(args.vae_checkpoint_dir, 'checkpoint_best.pth')
-                    if not os.path.exists(vae_ckpt):
-                        raise FileNotFoundError(f"Cannot generate latents. VAE checkpoint not found: {vae_ckpt}")
-                    if not os.path.exists(lmdb_paths[split]):
-                        raise FileNotFoundError(f"Cannot generate latents. VAE data not found: {lmdb_paths[split]}")
+            ddpm_trainer.train()
 
-                    generate_latent_dataset(
-                        vae_checkpoint_path=vae_ckpt, vae_data_path=lmdb_paths[split],
-                        output_path=ddpm_latent_paths[split], vocab_path=vocab_path,
-                        batch_size=args.vae_batch_size, device=args.device
-                    )
-
-        if args.train_ddpm or args.evaluate_ddpm:
-            print("\n--- DDPM Pipeline ---")
-            ddpm_config = DDPMConfig()
-            ddpm_args_ns = argparse.Namespace(
-                train_path=ddpm_latent_paths['train'], valid_path=ddpm_latent_paths['valid'], test_path=ddpm_latent_paths['test'],
-                checkpoint_dir=args.ddpm_checkpoint_dir,
-                resume_checkpoint=args.ddpm_resume_checkpoint,
-                checkpoint_path=args.ddpm_checkpoint_path or os.path.join(args.ddpm_checkpoint_dir,'checkpoint_best.pth'),
-                latent_dim=ddpm_config.latent_dim, timesteps=ddpm_config.timesteps,
-                loss_type=args.ddpm_loss_type, epochs=args.ddpm_epochs, batch_size=args.ddpm_batch_size,
-                lr=args.ddpm_lr, warmup_steps=args.ddpm_warmup_steps, weight_decay=args.ddpm_weight_decay,
-                log_interval=args.ddpm_log_interval, device=args.device,
-                train=args.train_ddpm, evaluate=args.evaluate_ddpm, results_path=args.ddpm_results_path
-            )
-
-            ddpm_trainer = DDPM_Trainer(ddpm_args_ns)
-
-            if args.train_ddpm:
-                ddpm_trainer.train()
-
-            if args.evaluate_ddpm:
-                ddpm_trainer.evaluate()
+        if args.evaluate_ddpm:
+            ddpm_trainer.evaluate()
 
         print("\nPipeline finished.")
 
