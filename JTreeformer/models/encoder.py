@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
 from torch_geometric.data import Batch
 
-from utils.config import ModelConfig
+from utils.config import VAEConfig
 from models.common_layers import MultiHeadAttention, WeightInitializer
 
 
@@ -18,7 +18,7 @@ class EncoderLayer(nn.Module):
     normalization are applied around both sub-layers, scaled by the DeepNet factor `alpha`.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: VAEConfig):
         super().__init__()
         self.config = config
         self.alpha = config.encoder_alpha
@@ -100,7 +100,7 @@ class Encoder(nn.Module):
     The complete JTreeformer Encoder module.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: VAEConfig):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList([EncoderLayer(config) for _ in range(config.num_layers_encoder)])
