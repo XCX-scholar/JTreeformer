@@ -61,7 +61,7 @@ class DecoderLayer(nn.Module):
 
             # Filter padding before DAGCN
             # print(node_features_no_cls.shape, padding_mask.shape)
-            is_pad_node = padding_mask[:, :-1].flatten()
+            is_pad_node = padding_mask[:, 1:].flatten()
             active_nodes_mask = ~is_pad_node
 
             # print(node_features_no_cls.shape, edge_index)
