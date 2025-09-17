@@ -9,15 +9,16 @@ from tqdm import tqdm
 from multiprocessing import Pool
 from typing import List
 from sklearn.model_selection import train_test_split
+from dataclasses import asdict
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from jtnn_utils.mol_tree import MolTree
 from data_processing.convert_smiles import convert_to_mol_tree
-from data_processing.preprocess_data import preprocess_and_save, generate_latent_dataset
+from data_processing.preprocess_data import preprocess_and_save, generate_latent_dataset, generate_latent_and_property_dataset
 from scripts.training_vae import Trainer as VAE_Trainer
 from scripts.training_ddpm import Trainer as DDPM_Trainer
-from utils.config import VAEConfig, DDPMConfig
-
+from scripts.training_predictor import PredictorTrainer
+from utils.config import VAEConfig, DDPMConfig, PredictorConfig
 
 def set_seed(seed: int):
     torch.manual_seed(seed)
@@ -47,6 +48,8 @@ def main():
     general_group.add_argument('--evaluate_vae', default=True, type=bool, help="Run VAE evaluation.")
     general_group.add_argument('--train_ddpm', default=True, type=bool, help="Run the DDPM training pipeline.")
     general_group.add_argument('--evaluate_ddpm', default=True, type=bool, help="Run DDPM evaluation.")
+    general_group.add_argument('--train_predictor', default=True, help="Run the Predictor training pipeline.")
+    general_group.add_argument('--evaluate_predictor', default=True, help="Run the Predictor evaluation pipeline.")
     general_group.add_argument('--data_dir', type=str, default='./data')
     general_group.add_argument('--dataset_name', default='tool_dataset', type=str, help="Name of SMILES dataset file.")
     general_group.add_argument('--dataset_suffix', default='smi', type=str, help="Suffix of dataset file.")
@@ -59,7 +62,7 @@ def main():
 
     # --- VAE specific arguments ---
     vae_group = parser.add_argument_group('VAE Hyperparameters')
-    vae_group.add_argument('--vae_checkpoint_dir', type=str, default='../checkpoints_vae')
+    vae_group.add_argument('--vae_checkpoint_dir', type=str, default='./checkpoints_vae')
     vae_group.add_argument('--vae_checkpoint_path', type=str, default=None, help="Specific VAE checkpoint to load for evaluation or DDPM data generation.")
     vae_group.add_argument('--vae_results_path', type=str, default=None,
                             help="Path to save VAE evaluation results JSON.")
@@ -75,7 +78,7 @@ def main():
 
     # --- DDPM specific arguments ---
     ddpm_group = parser.add_argument_group('DDPM Hyperparameters')
-    ddpm_group.add_argument('--ddpm_checkpoint_dir', type=str, default='../checkpoints_ddpm')
+    ddpm_group.add_argument('--ddpm_checkpoint_dir', type=str, default='./checkpoints_ddpm')
     ddpm_group.add_argument('--ddpm_checkpoint_path', type=str, default=None, help="Specific DDPM checkpoint to load for evaluation.")
     ddpm_group.add_argument('--ddpm_results_path', type=str, default=None, help="Path to save DDPM evaluation results JSON.")
     ddpm_group.add_argument('--ddpm_resume_checkpoint', type=str, default=None, help="Path to DDPM checkpoint to resume training from.")
@@ -86,6 +89,18 @@ def main():
     ddpm_group.add_argument('--ddpm_weight_decay', type=float, default=0.0)
     ddpm_group.add_argument('--ddpm_loss_type', type=str, default='l1', choices=['l1', 'l2'])
     ddpm_group.add_argument('--ddpm_log_interval', type=int, default=10)
+
+    # --- Predictor specific arguments ---
+    predictor_group = parser.add_argument_group('Predictor Hyperparameters')
+    predictor_group.add_argument('--predictor_checkpoint_dir', type=str, default='./checkpoints_predictor')
+    predictor_group.add_argument('--predictor_checkpoint_path', type=str, default=None, help="Specific Predictor checkpoint to load for evaluation.")
+    predictor_group.add_argument('--predictor_resume_checkpoint', type=str, default=None, help="Predictor checkpoint to resume training from.")
+    predictor_group.add_argument('--predictor_results_path', type=str, default=None, help="Path to save Predictor evaluation results JSON.")
+    predictor_group.add_argument('--predictor_epochs', type=int, default=500)
+    predictor_group.add_argument('--predictor_batch_size', type=int, default=128)
+    predictor_group.add_argument('--predictor_lr', type=float, default=1e-4)
+    predictor_group.add_argument('--predictor_warmup_steps', type=int, default=500)
+    predictor_group.add_argument('--predictor_weight_decay', type=float, default=0.01)
 
     args = parser.parse_args()
     set_seed(args.seed)
@@ -102,6 +117,7 @@ def main():
     args.vocab_path = vocab_path
 
     smiles_sources = {'all': dataset_smiles, 'train': train_smiles, 'valid': valid_smiles, 'test': test_smiles}
+    print(smiles_sources)
     mol_tree_paths = {split: os.path.abspath(os.path.join(args.processed_data_dir, f'{split}_mol_trees.pkl')) for split in smiles_sources}
     lmdb_paths = {split: os.path.abspath(os.path.join(args.processed_data_dir, f'{split}.lmdb')) for split in smiles_sources}
     split_indices_path = os.path.abspath(os.path.join(args.processed_data_dir, f'{args.dataset_name}_split_indices.json'))
@@ -248,7 +264,64 @@ def main():
         if args.evaluate_ddpm:
             ddpm_trainer.evaluate()
 
-        print("\nPipeline finished.")
+    # --- STEP 4.3: Predictor Training / Evaluation ---
+    if args.train_predictor or args.evaluate_predictor:
+        print("\n--- Predictor Pipeline ---")
+        predictor_data_paths = {
+            s: os.path.join(args.processed_data_dir, f'{s}_predictor_data.pt') for s in ['train', 'valid', 'test']
+        }
+        print("\n--- Preparing Dataset for Predictor ---")
+        for split in ['train', 'valid', 'test']:
+            if not os.path.exists(predictor_data_paths[split]) or args.force_preprocess:
+                vae_ckpt = args.vae_checkpoint_path or os.path.join(args.vae_checkpoint_dir, 'checkpoint_best.pth')
+                if not os.path.exists(vae_ckpt): raise FileNotFoundError(f"VAE checkpoint not found: {vae_ckpt}")
+                if not os.path.exists(lmdb_paths[split]):
+                    print(f"Warning: VAE data for '{split}' not found at {lmdb_paths[split]}. Skipping.")
+                    continue
+                try:
+                    generate_latent_and_property_dataset(vae_checkpoint_path=vae_ckpt, vae_data_path=lmdb_paths[split],
+                                               output_path=predictor_data_paths[split],
+                                               batch_size=args.vae_batch_size, device=args.device, vocab_path=vocab_path)
+                except (ImportError, ModuleNotFoundError):
+                    sys.exit("Could not generate data: 'models.vae_model.VAE' could not be imported.")
+
+
+        predictor_config = PredictorConfig()
+        ddpm_config = DDPMConfig()
+        ddpm_ckpt_path = args.ddpm_checkpoint_path or os.path.join(args.ddpm_checkpoint_dir, 'checkpoint_best.pth')
+        if not os.path.exists(ddpm_ckpt_path):
+            raise FileNotFoundError(f"Predictor requires a DDPM checkpoint, but none found at {ddpm_ckpt_path}")
+
+        predictor_args_ns = argparse.Namespace(
+            train=args.train_predictor, evaluate=args.evaluate_predictor,
+            train_data_path=predictor_data_paths['train'], valid_data_path=predictor_data_paths['valid'],
+            test_data_path=predictor_data_paths['test'],
+            diffusion_checkpoint_path=ddpm_ckpt_path,
+            checkpoint_dir=args.predictor_checkpoint_dir,
+            resume_checkpoint=args.predictor_resume_checkpoint,
+            checkpoint_path=args.predictor_checkpoint_path or os.path.join(args.predictor_checkpoint_dir,
+                                                                           'predictor_checkpoint_best.pth'),
+            results_path=args.predictor_results_path,
+            epochs=args.predictor_epochs, batch_size=args.predictor_batch_size,
+            lr=args.predictor_lr, warmup_steps=args.predictor_warmup_steps,
+            weight_decay=args.predictor_weight_decay, device=args.device,
+            targets_config=predictor_config.targets_config,
+            pred_hidden_dim=predictor_config.hidden_dim,
+            pred_num_layers=predictor_config.num_layers,
+            time_embed_dim=ddpm_config.time_embed_dim,
+            ddpm_hidden_dim=ddpm_config.hidden_dim,
+            ddpm_num_layers=ddpm_config.num_layers,
+            latent_dim=predictor_config.latent_dim,
+            timesteps=predictor_config.timesteps
+        )
+
+        predictor_trainer = PredictorTrainer(predictor_args_ns)
+        if args.train_predictor:
+            predictor_trainer.train()
+        if args.evaluate_predictor:
+            predictor_trainer.evaluate()
+
+    print("\nPipeline finished.")
 
 
 if __name__ == "__main__":
