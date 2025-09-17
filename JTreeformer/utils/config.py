@@ -79,3 +79,16 @@ class DDPMConfig:
     timesteps: int = 100
 
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+@dataclass
+class PredictorConfig:
+    """
+    Configuration for the property predictor model.
+    """
+    hidden_dim: int = 32
+    num_layers: int = 2
+
+    targets_config: dict = field(default_factory=lambda: {'w': 1, 'logp': 1, 'tpsa': 1})
+
+    latent_dim: int = 64      # Should match VAEConfig.latent_dim and DDPMConfig.latent_dim
+    timesteps: int = 100    # Should match DDPMConfig.timesteps
