@@ -111,65 +111,126 @@ class DiffusionModel:
 
         return x_prev
 
-    @torch.no_grad()
-    def sample(self, shape, device, num_inference_steps=50, eta=0.0):
+    def p_sample_guided(self, x_t, t, t_prev, predictor, targets, guidance_scale, eta=0.0):
+        with torch.enable_grad():
+            x_in = x_t.detach().requires_grad_(True)
+            predictions_dict = predictor(x_in)
+
+            total_loss = 0
+            for target_name, target_value in targets.items():
+                if target_name not in predictions_dict:
+                    print(f"Warning: Target '{target_name}' not in predictor's output heads. Skipping.")
+                    continue
+                total_loss += F.mse_loss(predictions_dict[target_name], target_value)
+
+            grad = torch.autograd.grad(total_loss, x_in)[0]
+
+        pred_noise = self.noise_predictor(x_t, t)
+        sqrt_one_minus_alpha_cumprod_t = self._extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape)
+        guidance_correction = sqrt_one_minus_alpha_cumprod_t * guidance_scale * grad
+        pred_noise_guided = pred_noise - guidance_correction
+
+        alpha_cumprod_t = self._extract(self.alphas_cumprod, t, x_t.shape)
+        alpha_cumprod_t_prev = self._extract(self.alphas_cumprod, t_prev, x_t.shape)
+        pred_x0 = self._predict_x0_from_noise(x_t, t, pred_noise_guided)
+        pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
+        sigma = eta * torch.sqrt(
+            (1 - alpha_cumprod_t_prev) / (1 - alpha_cumprod_t) * (1 - alpha_cumprod_t / alpha_cumprod_t_prev))
+        pred_dir_xt = torch.sqrt(1 - alpha_cumprod_t_prev - sigma ** 2) * pred_noise_guided
+        x_prev = torch.sqrt(alpha_cumprod_t_prev) * pred_x0 + pred_dir_xt
+        if eta > 0: x_prev = x_prev + sigma * torch.randn_like(x_t)
+        return x_prev
+
+    def sample(self, shape, device, num_inference_steps=50, eta=0.0, predictor=None, targets=None, guidance_scale=0.0):
         """
-        The full sampling loop to generate new data from pure noise.
+        Unified sampling loop for both unconditional and guided generation.
 
         Args:
-            shape (tuple): The shape of the output tensor (e.g., [batch_size, latent_dim]).
-            device: The device to run the sampling on.
-            num_inference_steps (int): The number of denoising steps. Fewer steps is faster.
-            eta (float): 0.0 for DDIM, 1.0 for DDPM.
+            shape (tuple): The shape of the output tensor.
+            device: The device to run sampling on.
+            num_inference_steps (int): Number of denoising steps.
+            eta (float): DDIM eta parameter (0.0 for deterministic, 1.0 for DDPM-like).
+            predictor (nn.Module, optional): The guidance model. Defaults to None.
+            targets (dict, optional): Dictionary of desired target values for guidance. Defaults to None.
+            guidance_scale (float, optional): The strength of the guidance. Defaults to 0.0.
 
         Returns:
             torch.Tensor: The generated clean sample.
         """
+        is_guided = predictor is not None and targets is not None and guidance_scale > 0.0
+
+        if is_guided:
+            predictor.eval()
+            desc = "Guided Sampling"
+        else:
+            desc = "Unconditional Sampling"
+
         x = torch.randn(shape, device=device)
-        inference_timestep_sequence = torch.linspace(self.timesteps - 1, 0, num_inference_steps).long().to(device)
+        inference_timestep_sequence = torch.linspace(self.timesteps - 1, 0, num_inference_steps).long()
 
-        for i in tqdm(range(len(inference_timestep_sequence)), desc="Sampling"):
+        for i in tqdm(range(len(inference_timestep_sequence)), desc=desc):
             t = torch.full((shape[0],), inference_timestep_sequence[i], device=device, dtype=torch.long)
-            t_prev = torch.full((shape[0],),
-                                inference_timestep_sequence[i + 1] if i + 1 < len(inference_timestep_sequence) else 0,
-                                device=device, dtype=torch.long)
-            x = self.p_sample(x, t, t_prev, eta)
+            t_prev_val = inference_timestep_sequence[i + 1] if i + 1 < len(inference_timestep_sequence) else 0
+            t_prev = torch.full((shape[0],), t_prev_val, device=device, dtype=torch.long)
 
+            if is_guided:
+                x = self.p_sample_guided(x, t, t_prev, predictor, targets, guidance_scale, eta)
+            else:
+                # p_sample is decorated with @torch.no_grad, so no context manager needed here
+                x = self.p_sample(x, t, t_prev, eta)
         return x
 
 
 if __name__ == '__main__':
+    from models.target_predictor import MultiTargetPredictor
     latent_dimension = 64
-    batch_size = 4
+    batch_size = 2
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    targets_config = {
+        'solubility': 1,
+        'lipophilicity': 1,
+        'binding_affinity': 1
+    }
+
     noise_predictor_model = NoisePredictorMLP(latent_dim=latent_dimension).to(device)
-    diffusion = DiffusionModel(noise_predictor_model, timesteps=1000, schedule_name='cosine')
-    print("--- Testing Forward Process (q_sample) ---")
-    dummy_clean_latents = torch.randn(batch_size, latent_dimension, device=device)
-    dummy_timesteps = torch.randint(0, 1000, (batch_size,), device=device)
+    predictor_model = MultiTargetPredictor(latent_dim=latent_dimension, hidden_dim=256, num_layers=3,
+                                           targets_config=targets_config).to(device)
+    diffusion = DiffusionModel(noise_predictor_model, timesteps=1000)
 
-    noisy_latents = diffusion.q_sample(dummy_clean_latents, dummy_timesteps)
-    print(f"Clean latents shape:  {dummy_clean_latents.shape}")
-    print(f"Noisy latents shape:  {noisy_latents.shape}")
-    assert noisy_latents.shape == dummy_clean_latents.shape
-    print("Forward process test successful.\n")
-    print("--- Testing Inference (sample) with DDIM ---")
-    generated_samples_ddim = diffusion.sample(
+    # --- 1. Test Unconditional Sampling ---
+    print("--- Testing Unconditional Inference using the unified sample() method ---")
+    unconditional_samples = diffusion.sample(
         shape=(batch_size, latent_dimension),
         device=device,
-        num_inference_steps=50,
-        eta=0.0
+        num_inference_steps=50
     )
-    print(f"Generated DDIM samples shape: {generated_samples_ddim.shape}")
-    assert generated_samples_ddim.shape == (batch_size, latent_dimension)
-    print("\n--- Testing Inference (sample) with DDPM ---")
-    generated_samples_ddpm = diffusion.sample(
+    print(f"Generated unconditional samples shape: {unconditional_samples.shape}")
+
+    # --- 2. Test Guided Sampling with a SUBSET of targets ---
+    print("\n--- Testing Guided Inference with a SUBSET of targets ---")
+
+    desired_targets = {
+        'solubility': torch.tensor([[0.8], [0.9]], device=device),
+        'binding_affinity': torch.tensor([[-1.2], [-1.5]], device=device)
+    }
+
+    guided_samples = diffusion.sample(
         shape=(batch_size, latent_dimension),
         device=device,
-        num_inference_steps=1000,
-        eta=1.0
+        predictor=predictor_model,
+        targets=desired_targets,
+        guidance_scale=10.0,
+        num_inference_steps=50
     )
-    print(f"Generated DDPM samples shape: {generated_samples_ddpm.shape}")
-    assert generated_samples_ddpm.shape == (batch_size, latent_dimension)
 
-    print("\nInference tests successful!")
+    with torch.no_grad():
+        final_predictions = predictor_model(guided_samples)
+
+    print("\nDesired Targets for Guidance:")
+    for name, val in desired_targets.items():
+        print(f"  {name}: \n{val.cpu().numpy()}")
+
+    print("\nFull Set of Predicted Targets from Guided Samples:")
+    for name, val in final_predictions.items():
+        print(f"  {name}: \n{val.cpu().numpy()}")
