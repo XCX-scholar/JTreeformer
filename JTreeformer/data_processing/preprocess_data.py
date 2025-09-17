@@ -143,3 +143,79 @@ def generate_latent_dataset(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     torch.save(final_tensor, output_path)
     print(f"Successfully saved {len(final_tensor)} latent vectors to {output_path}")
+
+def generate_latent_and_property_dataset(
+        vae_checkpoint_path: str,
+        vae_data_path: str,
+        output_path: str,
+        vocab_path: str,
+        batch_size: int,
+        device: str
+):
+    """
+    Uses a trained VAE to encode a dataset into latent vectors and saves them
+    along with their corresponding properties.
+
+    This is the preprocessing step required to generate a dataset for the Predictor.
+
+    Args:
+        vae_checkpoint_path (str): Path to the trained VAE model checkpoint.
+        vae_data_path (str): Path to the LMDB dataset for the VAE (which includes properties).
+        output_path (str): Path to save the output dictionary of tensors (.pt file).
+        vocab_path (str): Path to the vocabulary JSON file.
+        batch_size (int): Batch size for processing.
+        device (str): Device to run the model on ('cuda' or 'cpu').
+    """
+    if not os.path.exists(vae_checkpoint_path):
+        raise FileNotFoundError(f"VAE checkpoint not found at: {vae_checkpoint_path}")
+    if not os.path.exists(vae_data_path):
+        raise FileNotFoundError(f"VAE data not found at: {vae_data_path}")
+    if not os.path.exists(vocab_path):
+        raise FileNotFoundError(f"Vocabulary not found at: {vocab_path}")
+    print(f"--- Generating latent vectors and properties from {os.path.basename(vae_data_path)} ---")
+
+    dev = torch.device(device)
+    model_config = VAEConfig()
+
+    with open(vocab_path, 'r') as f:
+        vocab = json.load(f)
+
+    model = JTreeformer(model_config, vocab).to(dev)
+    checkpoint = torch.load(vae_checkpoint_path, map_location=dev)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    print("VAE model loaded successfully.")
+
+    dataloader = create_vae_dataloader(
+        dataset_path=vae_data_path,
+        batch_size=batch_size,
+        shuffle=False
+    )
+
+    all_latents = []
+    all_properties = []
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Encoding data and extracting properties"):
+            batch = batch.to(dev)
+            if not hasattr(batch, 'properties'):
+                raise ValueError("Dataset does not contain 'properties'. "
+                                 "Ensure 'predict_properties' was True during VAE data preprocessing.")
+
+            latent_dict = model.forward(batch)
+            latents = latent_dict['mean']
+            properties = batch.properties
+
+            all_latents.append(latents.cpu())
+            all_properties.append(properties.cpu())
+
+    final_latents = torch.cat(all_latents, dim=0)
+    final_properties = torch.cat(all_properties, dim=0)
+
+    output_data = {
+        'latents': final_latents,
+        'properties': final_properties
+    }
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    torch.save(output_data, output_path)
+    print(f"Successfully saved {len(final_latents)} latents and properties to {output_path}")
