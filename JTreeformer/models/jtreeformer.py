@@ -101,7 +101,6 @@ class JTreeformer(nn.Module):
         )
         latent_as_start_token = self.latent_to_decoder_proj(z)
         decoder_features[:, 0, :] = latent_as_start_token
-        # --- CORRECTED: Channel-wise latent fusion ---
         z_broadcasted = z.unsqueeze(1).expand(-1, decoder_features.size(1), -1)
         fused_features = self.latent_fusion_proj(
             torch.cat([decoder_features, z_broadcasted], dim=-1)
