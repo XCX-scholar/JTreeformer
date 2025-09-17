@@ -14,6 +14,8 @@ TRAIN_VAE=True
 EVALUATE_VAE=True
 TRAIN_DDPM=True
 EVALUATE_DDPM=True
+TRAIN_PREDICTOR=True
+EVALUATE_PREDICTOR=True
 DATA_DIR="./data"
 DATASET_NAME="tool_dataset"
 DATASET_SUFFIX="smi"
@@ -51,6 +53,17 @@ DDPM_WEIGHT_DECAY=0.0
 DDPM_LOSS_TYPE="l1" # "l1" or "l2"
 DDPM_LOG_INTERVAL=10
 
+# -- Predictor Hyperparameters -- <--- NEW SECTION
+PREDICTOR_CHECKPOINT_DIR="../checkpoints_predictor"
+PREDICTOR_CHECKPOINT_PATH=""
+PREDICTOR_RESULTS_PATH=""
+PREDICTOR_RESUME_CHECKPOINT=""
+PREDICTOR_EPOCHS=10
+PREDICTOR_BATCH_SIZE=4
+PREDICTOR_LR=1e-4
+PREDICTOR_WARMUP_STEPS=500
+PREDICTOR_WEIGHT_DECAY=0.01
+
 set -e
 
 # Set PYTHONPATH to include the source root and source_root/scripts
@@ -64,6 +77,8 @@ CMD_ARGS+=" --train_vae ${TRAIN_VAE}"
 CMD_ARGS+=" --evaluate_vae ${EVALUATE_VAE}"
 CMD_ARGS+=" --train_ddpm ${TRAIN_DDPM}"
 CMD_ARGS+=" --evaluate_ddpm ${EVALUATE_DDPM}"
+CMD_ARGS+=" --train_predictor ${TRAIN_PREDICTOR}"
+CMD_ARGS+=" --evaluate_predictor ${EVALUATE_PREDICTOR}"
 CMD_ARGS+=" --data_dir ${DATA_DIR}"
 CMD_ARGS+=" --dataset_name ${DATASET_NAME}"
 CMD_ARGS+=" --dataset_suffix ${DATASET_SUFFIX}"
@@ -115,6 +130,23 @@ CMD_ARGS+=" --ddpm_warmup_steps ${DDPM_WARMUP_STEPS}"
 CMD_ARGS+=" --ddpm_weight_decay ${DDPM_WEIGHT_DECAY}"
 CMD_ARGS+=" --ddpm_loss_type ${DDPM_LOSS_TYPE}"
 CMD_ARGS+=" --ddpm_log_interval ${DDPM_LOG_INTERVAL}"
+
+# -- Predictor arguments --
+CMD_ARGS+=" --predictor_checkpoint_dir ${PREDICTOR_CHECKPOINT_DIR}"
+if [ -n "$PREDICTOR_CHECKPOINT_PATH" ]; then
+    CMD_ARGS+=" --predictor_checkpoint_path ${PREDICTOR_CHECKPOINT_PATH}"
+fi
+if [ -n "$PREDICTOR_RESULTS_PATH" ]; then
+    CMD_ARGS+=" --predictor_results_path ${PREDICTOR_RESULTS_PATH}"
+fi
+if [ -n "$PREDICTOR_RESUME_CHECKPOINT" ]; then
+    CMD_ARGS+=" --predictor_resume_checkpoint ${PREDICTOR_RESUME_CHECKPOINT}"
+fi
+CMD_ARGS+=" --predictor_epochs ${PREDICTOR_EPOCHS}"
+CMD_ARGS+=" --predictor_batch_size ${PREDICTOR_BATCH_SIZE}"
+CMD_ARGS+=" --predictor_lr ${PREDICTOR_LR}"
+CMD_ARGS+=" --predictor_warmup_steps ${PREDICTOR_WARMUP_STEPS}"
+CMD_ARGS+=" --predictor_weight_decay ${PREDICTOR_WEIGHT_DECAY}"
 
 echo "Running main.py with the following arguments:"
 echo "${SOURCE_ROOT}/scripts/main.py ${CMD_ARGS}"
