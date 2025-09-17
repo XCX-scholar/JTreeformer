@@ -64,3 +64,45 @@ class LatentDataset(Dataset):
         Retrieves a latent vector.
         """
         return self.latents[idx]
+
+class PredictorDataset(Dataset):
+    """
+    A PyTorch Dataset for loading latent vectors and their corresponding properties
+    for training the predictor model.
+    """
+    def __init__(self, data_path: str, targets_config: dict):
+        """
+        Args:
+            data_path (str): Path to the .pt file containing a dictionary
+                             with 'latents' and 'properties' tensors.
+            targets_config (dict): A dictionary mapping target names to their
+                                   dimensions, e.g., {'solubility': 1}.
+                                   The order of keys must match the columns
+                                   in the 'properties' tensor.
+        """
+        print(f"Loading predictor dataset from: {data_path}")
+        data = torch.load(data_path)
+        self.latents = data['latents']
+        self.properties = data['properties']
+        self.target_keys = list(targets_config.keys())
+
+        if self.latents.shape[0] != self.properties.shape[0]:
+            raise ValueError("Mismatched number of samples between latents and properties.")
+        if len(self.target_keys) != self.properties.shape[1]:
+            raise ValueError(f"Number of targets in config ({len(self.target_keys)}) does not match "
+                             f"property dimensions ({self.properties.shape[1]}).")
+
+    def __len__(self) -> int:
+        return len(self.latents)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """
+        Retrieves a latent vector and its corresponding properties as a dictionary.
+        """
+        latent = self.latents[idx]
+        props = self.properties[idx]
+
+        # Create a dictionary of targets, ensuring each target tensor has a feature dimension.
+        targets_dict = {key: props[i:i+1] for i, key in enumerate(self.target_keys)}
+
+        return latent, targets_dict
