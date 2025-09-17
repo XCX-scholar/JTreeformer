@@ -66,7 +66,7 @@ class EncoderLayer(nn.Module):
             node_features_no_cls = x[:, 1:, :].reshape(-1, x.size(-1))
 
             # Filter out padding nodes before GCN
-            is_pad_node = padding_mask[:, :-1].flatten()
+            is_pad_node = padding_mask[:, 1:].flatten()
             active_nodes_mask = ~is_pad_node
 
             # GCN operates only on active nodes
