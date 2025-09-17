@@ -8,14 +8,16 @@ import json
 
 from models.diffusion_model import DiffusionModel
 from models.jtreeformer import JTreeformer
-from utils.config import VAEConfig, DDPMConfig
+from utils.config import VAEConfig, DDPMConfig, PredictorConfig
 from models.noise_predictor import NoisePredictorMLP
+from models.target_predictor import MultiTargetPredictor
 
 from jtnn_utils.vocab import Vocab
 from jtnn_utils.mol_tree import MolTreeNode
 from jtnn_utils.chemutils import get_mol
 
 from mol_utils import MolTree2Mol, have_slots, can_assemble
+import numpy as np
 
 # Now only support non-batch decoding, batch decoding will be added later.
 
@@ -187,20 +189,72 @@ def main(args):
 
     print("Initializing models...")
     vae_model = JTreeformer(vae_config, json_vocab).to(args.device)
-    # vae_model.load_state_dict(torch.load(args.vae_path, map_location=args.device))
+    vae_model.load_state_dict(torch.load(args.vae_path, map_location=args.device))
     vae_model.eval()
 
     noise_predictor = NoisePredictorMLP(latent_dim=ddpm_config.latent_dim).to(args.device)
-    # noise_predictor.load_state_dict(torch.load(args.noise_predictor_path, map_location=args.device))
+    noise_predictor.load_state_dict(torch.load(args.noise_predictor_path, map_location=args.device))
     diffusion_model = DiffusionModel(noise_predictor, timesteps=ddpm_config.timesteps)
+    predictor = None
+    targets = None
+    guidance_scale = 0.0
 
+    is_conditional = args.weight is not None or args.logp is not None or args.tpsa is not None
+
+    if is_conditional:
+        print("Conditional generation is enabled.")
+        if not args.predictor_path or not args.scaler_path:
+            raise ValueError("Predictor path and scaler path must be provided for conditional generation.")
+
+        # Load property scaler
+        with open(args.scaler_path, 'r') as f:
+            scaler = json.load(f)
+        scaler_mean = np.array(scaler['mean'])
+        scaler_std = np.array(scaler['std'])
+
+        # Scale the target properties
+        scaled_targets_dict = {}
+        if args.weight is not None:
+            scaled_targets_dict['w'] = (args.weight - scaler_mean[0]) / scaler_std[0]
+            print(f"Target Weight: {args.weight} -> Scaled: {scaled_targets_dict['w']:.4f}")
+        if args.logp is not None:
+            scaled_targets_dict['logp'] = (args.logp - scaler_mean[1]) / scaler_std[1]
+            print(f"Target LogP: {args.logp} -> Scaled: {scaled_targets_dict['logp']:.4f}")
+        if args.tpsa is not None:
+            scaled_targets_dict['tpsa'] = (args.tpsa - scaler_mean[2]) / scaler_std[2]
+            print(f"Target TPSA: {args.tpsa} -> Scaled: {scaled_targets_dict['tpsa']:.4f}")
+
+        if not scaled_targets_dict:
+            raise ValueError("At least one target property must be provided for conditional generation.")
+
+        # Format targets for the diffusion model
+        targets = {
+            key: torch.full((args.num_samples, 1), val, device=args.device)
+            for key, val in scaled_targets_dict.items()
+        }
+
+        # Load the predictor model
+        print(f"Loading predictor from {args.predictor_path}...")
+        predictor_config = PredictorConfig()
+        predictor = MultiTargetPredictor(
+            latent_dim=predictor_config.latent_dim,
+            hidden_dim=predictor_config.hidden_dim,
+            num_layers=predictor_config.num_layers,
+            targets_config=predictor_config.targets_config
+        ).to(args.device)
+        predictor.load_state_dict(torch.load(args.predictor_path, map_location=args.device))
+        predictor.eval()
+        guidance_scale = args.guidance_scale
     # --- Generation ---
     print(f"Generating {args.num_samples} samples using {args.inference_steps} DDIM steps...")
     latent_vectors = diffusion_model.sample(
         shape=(args.num_samples, ddpm_config.latent_dim),
         device=args.device,
         num_inference_steps=args.inference_steps,
-        eta=args.eta
+        eta=args.eta,
+        predictor=predictor,
+        targets=targets,
+        guidance_scale=guidance_scale
     )
     print("Latent vectors sampled.")
     print("Decoding latent vectors to molecules...")
@@ -238,13 +292,20 @@ if __name__ == "__main__":
     parser.add_argument('--output_path', type=str, default='results/generated_molecules.txt',
                         help="Path to save generated SMILES.")
 
-    parser.add_argument('--num_samples', type=int, default=5, help="Number of molecules to generate.")
+    parser.add_argument('--num_samples', type=int, default=1, help="Number of molecules to generate.")
     parser.add_argument('--latent_dim', type=int, default=64, help="Dimension of the latent space.")
     parser.add_argument('--max_decode_step', type=int, default=15, help="Maximum number of nodes in the molecule tree.")
 
     parser.add_argument('--timesteps', type=int, default=10, help="Total timesteps in the diffusion model.")
     parser.add_argument('--inference_steps', type=int, default=10, help="Number of steps for DDIM sampling.")
     parser.add_argument('--eta', type=float, default=0.0, help="DDIM eta parameter. 0.0 for deterministic DDIM.")
+
+    parser.add_argument('--predictor_path', type=str, default="aaa", help="Path to trained property predictor model (required for conditional generation).")
+    parser.add_argument('--scaler_path', type=str, default="", help="Path to property scaler JSON file (required for conditional generation).")
+    parser.add_argument('--guidance_scale', type=float, default=5.0, help="Strength of the guidance for conditional generation.")
+    parser.add_argument('--weight', type=float, default=100, help="Target molecular weight for conditional generation.")
+    parser.add_argument('--logp', type=float, default=None, help="Target LogP for conditional generation.")
+    parser.add_argument('--tpsa', type=float, default=None, help="Target TPSA for conditional generation.")
 
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
 
